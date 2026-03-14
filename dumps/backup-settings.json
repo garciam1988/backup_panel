@@ -1,7 +1,7 @@
 {
   "enabled" : true,
   "dailyTime" : "09:00",
-  "lastDailyRun" : "2026-03-13",
+  "lastDailyRun" : "2026-03-14",
   "dumpsDir" : "C:\\Coincidir\\Coincidir Backups Panel\\coincidir-backups-panel\\dumps",
   "dumpPath" : "C:\\Coincidir\\Coincidir Backups Panel\\coincidir-backups-panel\\dumps"
 }
