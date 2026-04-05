@@ -2616,7 +2616,7 @@ CREATE TABLE `user_account` (
 
 LOCK TABLES `user_account` WRITE;
 /*!40000 ALTER TABLE `user_account` DISABLE KEYS */;
-INSERT INTO `user_account` VALUES (1,'mgarcia','$2a$10$mA31NmdLU3VwejVZKpBHxeYAAHk1YwIsphZDAC.IbDb.yuZE/p0Ou','SELLER','Mariana','2026-02-26 20:52:10.527364','Lopez',NULL),(2,'admin','$2a$10$bzApTdBIynAGx.NvtjBXseTmFKyE9wOuocB90yQ.jUDbSEFhHuiDq','ADMIN','Matias','2026-04-05 21:32:53.330584','Garcia',NULL),(3,'manuc','$2a$10$tzek8gtd.uqOO.tMjyPaAuZQvowJKvPi7YFkJ3jwp3GToLEahcfvu','SELLER','Manu','2026-02-03 20:39:43.976197','C',NULL),(33,'operador','$2a$10$bzApTdBIynAGx.NvtjBXseTmFKyE9wOuocB90yQ.jUDbSEFhHuiDq','OPERATIONS','Operations','2026-04-04 19:17:52.091239','User',NULL),(159,'coinbot','$2a$10$bzApTdBIynAGx.NvtjBXseTmFKyE9wOuocB90yQ.jUDbSEFhHuiDq','ADMIN','CoinBot','2026-04-03 18:34:51.478495',NULL,NULL),(160,'matiasg1988@gmail.com','$2a$10$JzHIVJpCfwUGpU6qxmTmjegfmOJ9u4ctst707Nxyd6Awb79VaBVW2','USER',NULL,NULL,NULL,NULL);
+INSERT INTO `user_account` VALUES (1,'mgarcia','$2a$10$mA31NmdLU3VwejVZKpBHxeYAAHk1YwIsphZDAC.IbDb.yuZE/p0Ou','SELLER','Mariana','2026-02-26 20:52:10.527364','Lopez',NULL),(2,'admin','$2a$10$bzApTdBIynAGx.NvtjBXseTmFKyE9wOuocB90yQ.jUDbSEFhHuiDq','ADMIN','Matias','2026-04-05 21:53:40.928492','Garcia',NULL),(3,'manuc','$2a$10$tzek8gtd.uqOO.tMjyPaAuZQvowJKvPi7YFkJ3jwp3GToLEahcfvu','SELLER','Manu','2026-02-03 20:39:43.976197','C',NULL),(33,'operador','$2a$10$bzApTdBIynAGx.NvtjBXseTmFKyE9wOuocB90yQ.jUDbSEFhHuiDq','OPERATIONS','Operations','2026-04-04 19:17:52.091239','User',NULL),(159,'coinbot','$2a$10$bzApTdBIynAGx.NvtjBXseTmFKyE9wOuocB90yQ.jUDbSEFhHuiDq','ADMIN','CoinBot','2026-04-03 18:34:51.478495',NULL,NULL),(160,'matiasg1988@gmail.com','$2a$10$JzHIVJpCfwUGpU6qxmTmjegfmOJ9u4ctst707Nxyd6Awb79VaBVW2','USER',NULL,NULL,NULL,NULL);
 /*!40000 ALTER TABLE `user_account` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -2835,4 +2835,4 @@ SET character_set_client = @saved_cs_client;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-04-05 18:49:35
+-- Dump completed on 2026-04-05 18:53:43
