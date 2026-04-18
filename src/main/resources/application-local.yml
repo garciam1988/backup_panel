@@ -1,0 +1,53 @@
+server:
+  port: 8080
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 15MB
+      max-request-size: 15MB
+  datasource:
+    url: jdbc:mysql://localhost:3306/coincidir?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull
+    username: root
+    password: "1234"
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQLDialect
+  mail:
+    host: ${SMTP_HOST:wo51.wiroos.host}
+    port: ${SMTP_PORT:465}
+    username: ${SMTP_USER:info@yes-traveluy.com}
+    password: ${SMTP_PASS:YesTravel26}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: true
+      mail.smtp.starttls.enable: false
+      mail.smtp.starttls.required: false
+      mail.smtp.ssl.trust: ${SMTP_HOST:wo51.wiroos.host}
+
+coincidir:
+  sales-email: sales@yes-traveluy.com
+  anthropic-key: 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
+  aerodatabox-key: ${AERODATABOX_KEY:fc175a9236msh0a91a116322637cp14d398jsn1823a5291f18}
+  mail-from: ${MAIL_FROM:YES Travel <info@yes-traveluy.com>}
+  mail-bcc: ${MAIL_BCC:info@yes-traveluy.com}
+  admin-panel-url: ${ADMIN_PANEL_URL:http://localhost:3002}
+  portal-url: ${NEXT_PUBLIC_USER_PANEL_URL:http://localhost:3001}
+  user-portal-url: ${NEXT_PUBLIC_USER_PANEL_URL:${coincidir.portal-url:http://localhost:3001}}
+  backups:
+    dir: dumps
+    admin-code: ${COINCIDIR_BACKUPS_ADMIN_CODE:1234}
+
+security:
+  jwt:
+    secret: "8k8l0p0vC9k14y3w3m1k+T1bJ3Vq1Q9WZzqQyV6f1s8="
+    ttl-seconds: 43200
+
+logging:
+  level:
+    app.coincidir.api.service.MatchingService: WARN
