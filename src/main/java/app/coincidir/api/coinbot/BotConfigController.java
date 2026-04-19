@@ -52,6 +52,8 @@ public class BotConfigController {
         if (dto.botName != null)           entity.setBotName(dto.botName);
         if (dto.brandName != null)         entity.setBrandName(dto.brandName);
         if (dto.logoUrl != null)           entity.setLogoUrl(dto.logoUrl);
+        if (dto.botAvatarUrl != null)      entity.setBotAvatarUrl(dto.botAvatarUrl);
+        if (dto.themeJson != null)         entity.setThemeJson(dto.themeJson);
         if (dto.welcomeMessage != null)    entity.setWelcomeMessage(dto.welcomeMessage);
 
         if (dto.allowTts != null)          entity.setAllowTts(dto.allowTts);
@@ -111,6 +113,7 @@ public class BotConfigController {
         e.setBotName("Lety");
         e.setBrandName("YES Travel");
         e.setLogoUrl("/yes-travel-logo.jpg");
+        e.setBotAvatarUrl("");
         e.setWelcomeMessage(
             "¡Hola! 👋 Soy **Lety**, de YES Travel.\n\n" +
             "Estoy acá para ayudarte con todo lo que necesites sobre **tu reserva** ✈️\n\n" +
@@ -146,6 +149,8 @@ public class BotConfigController {
         public String botName;
         public String brandName;
         public String logoUrl;
+        public String botAvatarUrl;
+        public String themeJson;
         public String welcomeMessage;
 
         public Boolean allowTts;
@@ -174,6 +179,8 @@ public class BotConfigController {
             d.botName                = e.getBotName();
             d.brandName              = e.getBrandName();
             d.logoUrl                = e.getLogoUrl();
+            d.botAvatarUrl           = e.getBotAvatarUrl();
+            d.themeJson              = e.getThemeJson();
             d.welcomeMessage         = e.getWelcomeMessage();
             d.allowTts               = e.getAllowTts();
             d.allowUserAudio         = e.getAllowUserAudio();

@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 9000
 
 spring:
   servlet:
@@ -7,7 +7,7 @@ spring:
       max-file-size: 15MB
       max-request-size: 15MB
   datasource:
-    url: jdbc:mysql://localhost:3306/coincidir?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull
+    url: jdbc:mysql://localhost:3306/arviz?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull
     username: root
     password: "1234"
   jpa:

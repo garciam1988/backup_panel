@@ -36,6 +36,15 @@ public class BotConfig {
     @Column(name = "logo_url", columnDefinition = "LONGTEXT")
     private String logoUrl;
 
+    /** Avatar del bot (cara/foto). URL o data:image base64. Si está vacío, el front usa el ícono del avión. */
+    @Column(name = "bot_avatar_url", columnDefinition = "LONGTEXT")
+    private String botAvatarUrl;
+
+    /** Tema de colores (JSON). 6 colores: primary, primaryDark, primaryLight, chatBg, botBubble, botBubbleText.
+     *  Si es NULL o inválido, el frontend cae a los colores default de Coincidir (azul). */
+    @Column(name = "theme_json", columnDefinition = "TEXT")
+    private String themeJson;
+
     @Column(name = "welcome_message", columnDefinition = "TEXT")
     private String welcomeMessage;
 
