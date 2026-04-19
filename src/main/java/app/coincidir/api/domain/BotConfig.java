@@ -40,6 +40,14 @@ public class BotConfig {
     @Column(name = "bot_avatar_url", columnDefinition = "LONGTEXT")
     private String botAvatarUrl;
 
+    /** Título del header del chat (ej: "Asistencia Leonel"). Si está vacío, el front cae a "Asistencia {botName}". */
+    @Column(name = "header_title", length = 255)
+    private String headerTitle;
+
+    /** Subtítulo del header (ej: "Disponible ahora · Soporte post venta"). Si está vacío, el front usa el default. */
+    @Column(name = "header_subtitle", length = 255)
+    private String headerSubtitle;
+
     /** Tema de colores (JSON). 6 colores: primary, primaryDark, primaryLight, chatBg, botBubble, botBubbleText.
      *  Si es NULL o inválido, el frontend cae a los colores default de Coincidir (azul). */
     @Column(name = "theme_json", columnDefinition = "TEXT")

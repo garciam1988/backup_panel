@@ -53,6 +53,8 @@ public class BotConfigController {
         if (dto.brandName != null)         entity.setBrandName(dto.brandName);
         if (dto.logoUrl != null)           entity.setLogoUrl(dto.logoUrl);
         if (dto.botAvatarUrl != null)      entity.setBotAvatarUrl(dto.botAvatarUrl);
+        if (dto.headerTitle != null)       entity.setHeaderTitle(dto.headerTitle);
+        if (dto.headerSubtitle != null)    entity.setHeaderSubtitle(dto.headerSubtitle);
         if (dto.themeJson != null)         entity.setThemeJson(dto.themeJson);
         if (dto.welcomeMessage != null)    entity.setWelcomeMessage(dto.welcomeMessage);
 
@@ -150,6 +152,8 @@ public class BotConfigController {
         public String brandName;
         public String logoUrl;
         public String botAvatarUrl;
+        public String headerTitle;
+        public String headerSubtitle;
         public String themeJson;
         public String welcomeMessage;
 
@@ -180,6 +184,8 @@ public class BotConfigController {
             d.brandName              = e.getBrandName();
             d.logoUrl                = e.getLogoUrl();
             d.botAvatarUrl           = e.getBotAvatarUrl();
+            d.headerTitle            = e.getHeaderTitle();
+            d.headerSubtitle         = e.getHeaderSubtitle();
             d.themeJson              = e.getThemeJson();
             d.welcomeMessage         = e.getWelcomeMessage();
             d.allowTts               = e.getAllowTts();

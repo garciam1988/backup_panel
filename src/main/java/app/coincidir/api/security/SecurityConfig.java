@@ -171,6 +171,7 @@ public class SecurityConfig {
                 "https://*.railway.app",
                 "https://*.yes-traveluy.com"
 
+
         ));
         cfg.setAllowedMethods(List.of("GET","POST","PUT","PATCH","DELETE","OPTIONS"));
         cfg.setAllowedHeaders(List.of("Authorization","Content-Type","Accept","Origin","X-Requested-With","X-Request-Id"));
