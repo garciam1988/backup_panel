@@ -104,6 +104,19 @@ public class BotConfig {
     @Column(name = "quick_access_json", columnDefinition = "TEXT")
     private String quickAccessJson;
 
+    // ── Logging de conversaciones ─────────────────────────────────────────
+    /** Minutos de inactividad para considerar la charla cerrada y persistirla. Default 15. */
+    @Column(name = "conversation_timeout_minutes", nullable = false)
+    private Integer conversationTimeoutMinutes = 15;
+
+    /**
+     * Prompt libre que le dice al bot qué datos debe pedirle al usuario
+     * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).
+     * Se inyecta al system prompt del bot. Configurable por bot/marca desde /admin.
+     */
+    @Column(name = "data_request_prompt", columnDefinition = "TEXT")
+    private String dataRequestPrompt;
+
     // ── Auditoría ─────────────────────────────────────────────────
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

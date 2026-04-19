@@ -81,6 +81,11 @@ public class BotConfigController {
         if (dto.showQuickAccess != null)   entity.setShowQuickAccess(dto.showQuickAccess);
         if (dto.quickAccessJson != null)   entity.setQuickAccessJson(dto.quickAccessJson);
 
+        if (dto.conversationTimeoutMinutes != null && dto.conversationTimeoutMinutes > 0) {
+            entity.setConversationTimeoutMinutes(dto.conversationTimeoutMinutes);
+        }
+        if (dto.dataRequestPrompt != null) entity.setDataRequestPrompt(dto.dataRequestPrompt);
+
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
         }
@@ -131,6 +136,8 @@ public class BotConfigController {
         e.setAllowShowImages(true);
         e.setAllowSendEmails(true);
         e.setShowQuickAccess(true);
+        e.setConversationTimeoutMinutes(15);
+        e.setDataRequestPrompt(null);
         e.setQuickAccessJson(
             "[" +
             "{\"id\":\"qa-1\",\"label\":\"📋 Mi reserva\",\"text\":\"Quiero consultar mi reserva\"}," +
@@ -175,6 +182,9 @@ public class BotConfigController {
         public Boolean showQuickAccess;
         public String  quickAccessJson;
 
+        public Integer conversationTimeoutMinutes;
+        public String  dataRequestPrompt;
+
         public Instant updatedAt;
         public String  updatedBy;
 
@@ -200,6 +210,8 @@ public class BotConfigController {
             d.allowSendEmails        = e.getAllowSendEmails();
             d.showQuickAccess        = e.getShowQuickAccess();
             d.quickAccessJson        = e.getQuickAccessJson();
+            d.conversationTimeoutMinutes = e.getConversationTimeoutMinutes();
+            d.dataRequestPrompt      = e.getDataRequestPrompt();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;
