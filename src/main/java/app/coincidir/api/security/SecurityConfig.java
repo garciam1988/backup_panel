@@ -169,8 +169,10 @@ public class SecurityConfig {
                 "https://localhost",
                 "ionic://localhost",
                 "https://*.railway.app",
-                "https://*.yes-traveluy.com"
-
+                "https://*.yes-traveluy.com",
+                "https://arviz-solutions.com",
+                "https://*.arviz-solutions.com"
+                
 
         ));
         cfg.setAllowedMethods(List.of("GET","POST","PUT","PATCH","DELETE","OPTIONS"));
