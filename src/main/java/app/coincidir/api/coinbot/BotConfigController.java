@@ -62,6 +62,11 @@ public class BotConfigController {
         if (dto.allowUserAudio != null)    entity.setAllowUserAudio(dto.allowUserAudio);
         if (dto.useCustomVoice != null)    entity.setUseCustomVoice(dto.useCustomVoice);
         if (dto.customVoiceId != null)     entity.setCustomVoiceId(dto.customVoiceId);
+        if (dto.ttsModel != null)          entity.setTtsModel(dto.ttsModel);
+        if (dto.ttsStability != null)      entity.setTtsStability(dto.ttsStability);
+        if (dto.ttsSimilarity != null)     entity.setTtsSimilarity(dto.ttsSimilarity);
+        if (dto.ttsStyle != null)          entity.setTtsStyle(dto.ttsStyle);
+        if (dto.ttsSpeed != null)          entity.setTtsSpeed(dto.ttsSpeed);
 
         if (dto.customPrompt != null)      entity.setCustomPrompt(dto.customPrompt);
         if (dto.businessRulesJson != null) entity.setBusinessRulesJson(dto.businessRulesJson);
@@ -130,6 +135,11 @@ public class BotConfigController {
         e.setAllowUserAudio(true);
         e.setUseCustomVoice(false);
         e.setCustomVoiceId("");
+        e.setTtsModel("eleven_flash_v2_5");
+        e.setTtsStability(0.40);
+        e.setTtsSimilarity(0.75);
+        e.setTtsStyle(0.50);
+        e.setTtsSpeed(1.0);
         e.setCustomPrompt("");           // vacío → frontend usa ORIGINAL_PROMPT
         e.setBusinessRulesJson("[]");
         e.setAllowReadReceipts(true);
@@ -169,6 +179,12 @@ public class BotConfigController {
         public Boolean useCustomVoice;
         public String  customVoiceId;
 
+        public String  ttsModel;
+        public Double  ttsStability;
+        public Double  ttsSimilarity;
+        public Double  ttsStyle;
+        public Double  ttsSpeed;
+
         public String  customPrompt;
         public String  businessRulesJson;
 
@@ -202,6 +218,11 @@ public class BotConfigController {
             d.allowUserAudio         = e.getAllowUserAudio();
             d.useCustomVoice         = e.getUseCustomVoice();
             d.customVoiceId          = e.getCustomVoiceId();
+            d.ttsModel               = e.getTtsModel();
+            d.ttsStability           = e.getTtsStability();
+            d.ttsSimilarity          = e.getTtsSimilarity();
+            d.ttsStyle               = e.getTtsStyle();
+            d.ttsSpeed               = e.getTtsSpeed();
             d.customPrompt           = e.getCustomPrompt();
             d.businessRulesJson      = e.getBusinessRulesJson();
             d.activePromptTemplateId = e.getActivePromptTemplateId();

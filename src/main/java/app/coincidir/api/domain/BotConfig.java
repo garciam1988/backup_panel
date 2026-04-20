@@ -69,6 +69,27 @@ public class BotConfig {
     @Column(name = "custom_voice_id", length = 128)
     private String customVoiceId;
 
+    // ── Ajustes del TTS (ElevenLabs) ─────────────────────────────────────
+    /** Modelo: eleven_flash_v2_5 (default), eleven_turbo_v2_5, eleven_multilingual_v2, eleven_v3 */
+    @Column(name = "tts_model", length = 80)
+    private String ttsModel;
+
+    /** 0.0-1.0. Más bajo = más expresivo/variable. */
+    @Column(name = "tts_stability")
+    private Double ttsStability;
+
+    /** 0.0-1.0. Cuánto se parece a la voz original. */
+    @Column(name = "tts_similarity")
+    private Double ttsSimilarity;
+
+    /** 0.0-1.0. Exageración prosódica/emocional. */
+    @Column(name = "tts_style")
+    private Double ttsStyle;
+
+    /** 0.7-1.2. Velocidad de la voz. */
+    @Column(name = "tts_speed")
+    private Double ttsSpeed;
+
     // ── Prompt ─────────────────────────────────────────────────
     /** Si está vacío o NULL → el frontend usa ORIGINAL_PROMPT */
     @Column(name = "custom_prompt", columnDefinition = "LONGTEXT")
