@@ -90,6 +90,10 @@ public class BotConfigController {
             entity.setConversationTimeoutMinutes(dto.conversationTimeoutMinutes);
         }
         if (dto.dataRequestPrompt != null) entity.setDataRequestPrompt(dto.dataRequestPrompt);
+        if (dto.fraudDetectionEnabled != null) entity.setFraudDetectionEnabled(dto.fraudDetectionEnabled);
+        if (dto.fraudAlertEmails != null)      entity.setFraudAlertEmails(dto.fraudAlertEmails);
+        if (dto.fraudEmailSubject != null)     entity.setFraudEmailSubject(dto.fraudEmailSubject);
+        if (dto.fraudEmailTemplate != null)    entity.setFraudEmailTemplate(dto.fraudEmailTemplate);
 
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
@@ -148,6 +152,32 @@ public class BotConfigController {
         e.setShowQuickAccess(true);
         e.setConversationTimeoutMinutes(15);
         e.setDataRequestPrompt(null);
+        e.setFraudDetectionEnabled(false);
+        e.setFraudAlertEmails(null);
+        e.setFraudEmailSubject("[Alerta fraude] {{brandName}} — {{clientName}}");
+        e.setFraudEmailTemplate(
+            "<!DOCTYPE html><html><body style=\"font-family: Arial, sans-serif; background:#f4f4f4; padding:20px;\">" +
+            "<div style=\"max-width:600px;margin:auto;background:white;border-radius:10px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.08);\">" +
+            "<h2 style=\"color:#b91c1c;margin-top:0;\">⚠️ Alerta de posible fraude</h2>" +
+            "<p style=\"color:#475569;font-size:14px;line-height:1.6;\">Se detectó un intento sospechoso en el bot de <strong>{{brandName}}</strong>.</p>" +
+            "<table style=\"width:100%;border-collapse:collapse;font-size:13px;color:#1e293b;\">" +
+            "<tr><td style=\"padding:6px 0;color:#64748b;width:130px;\">Cliente:</td><td style=\"padding:6px 0;\"><strong>{{clientName}}</strong></td></tr>" +
+            "<tr><td style=\"padding:6px 0;color:#64748b;\">Severidad:</td><td style=\"padding:6px 0;\"><strong>{{severity}}</strong></td></tr>" +
+            "<tr><td style=\"padding:6px 0;color:#64748b;\">Fecha:</td><td style=\"padding:6px 0;\">{{createdAt}}</td></tr>" +
+            "<tr><td style=\"padding:6px 0;color:#64748b;\">Device:</td><td style=\"padding:6px 0;\">{{deviceOs}} · {{deviceBrowser}}</td></tr>" +
+            "</table>" +
+            "<div style=\"margin-top:20px;padding:14px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:6px;\">" +
+            "<div style=\"font-size:11px;color:#991b1b;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;\">Mensaje sospechoso</div>" +
+            "<div style=\"color:#1e293b;font-size:14px;\">{{suspiciousMessage}}</div>" +
+            "</div>" +
+            "<div style=\"margin-top:16px;padding:14px;background:#fff7ed;border-left:4px solid #f59e0b;border-radius:6px;\">" +
+            "<div style=\"font-size:11px;color:#92400e;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;\">Motivo detectado</div>" +
+            "<div style=\"color:#1e293b;font-size:14px;\">{{reason}}</div>" +
+            "</div>" +
+            "<p style=\"margin-top:22px;font-size:12px;color:#94a3b8;\">El bot ya cortó la conversación con el cliente. " +
+            "Podés revisar el detalle completo desde el /admin.</p>" +
+            "</div></body></html>"
+        );
         e.setQuickAccessJson(
             "[" +
             "{\"id\":\"qa-1\",\"label\":\"📋 Mi reserva\",\"text\":\"Quiero consultar mi reserva\"}," +
@@ -201,6 +231,11 @@ public class BotConfigController {
         public Integer conversationTimeoutMinutes;
         public String  dataRequestPrompt;
 
+        public Boolean fraudDetectionEnabled;
+        public String  fraudAlertEmails;
+        public String  fraudEmailSubject;
+        public String  fraudEmailTemplate;
+
         public Instant updatedAt;
         public String  updatedBy;
 
@@ -233,6 +268,10 @@ public class BotConfigController {
             d.quickAccessJson        = e.getQuickAccessJson();
             d.conversationTimeoutMinutes = e.getConversationTimeoutMinutes();
             d.dataRequestPrompt      = e.getDataRequestPrompt();
+            d.fraudDetectionEnabled  = e.getFraudDetectionEnabled();
+            d.fraudAlertEmails       = e.getFraudAlertEmails();
+            d.fraudEmailSubject      = e.getFraudEmailSubject();
+            d.fraudEmailTemplate     = e.getFraudEmailTemplate();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;

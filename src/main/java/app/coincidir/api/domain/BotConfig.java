@@ -130,6 +130,23 @@ public class BotConfig {
     @Column(name = "conversation_timeout_minutes", nullable = false)
     private Integer conversationTimeoutMinutes = 15;
 
+    // ── Detección de fraude ──────────────────────────────────────────────
+    /** Si está activada, el bot clasifica cada mensaje del cliente y alerta si detecta fraude. */
+    @Column(name = "fraud_detection_enabled", nullable = false)
+    private Boolean fraudDetectionEnabled = Boolean.FALSE;
+
+    /** Emails destino separados por coma. */
+    @Column(name = "fraud_alert_emails", length = 500)
+    private String fraudAlertEmails;
+
+    /** Asunto del mail de alerta (admite {{variables}}). */
+    @Column(name = "fraud_email_subject", length = 300)
+    private String fraudEmailSubject;
+
+    /** HTML de la plantilla del mail (admite {{variables}}). */
+    @Column(name = "fraud_email_template", columnDefinition = "LONGTEXT")
+    private String fraudEmailTemplate;
+
     /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).
