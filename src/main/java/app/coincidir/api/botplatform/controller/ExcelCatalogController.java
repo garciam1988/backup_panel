@@ -3,6 +3,7 @@ package app.coincidir.api.botplatform.controller;
 import app.coincidir.api.botplatform.domain.ExcelCatalog;
 import app.coincidir.api.botplatform.domain.ExcelCatalogRow;
 import app.coincidir.api.botplatform.repository.ExcelCatalogRepository;
+import app.coincidir.api.botplatform.repository.ExcelCatalogRowRepository;
 import app.coincidir.api.botplatform.service.ExcelCatalogService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,6 +37,7 @@ import java.util.*;
 public class ExcelCatalogController {
 
     private final ExcelCatalogRepository catalogRepo;
+    private final ExcelCatalogRowRepository rowRepo;
     private final ExcelCatalogService catalogService;
     private final ObjectMapper json = new ObjectMapper();
 
@@ -74,6 +76,7 @@ public class ExcelCatalogController {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> dataMap = json.readValue(r.getDataJson(), Map.class);
                 Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", r.getId());
                 item.put("sheet", r.getSheetName());
                 item.put("row", r.getRowIndex());
                 item.put("data", dataMap);
@@ -127,6 +130,62 @@ public class ExcelCatalogController {
         if (dto.active != null) e.setActive(dto.active);
         ExcelCatalog saved = catalogRepo.save(e);
         return ResponseEntity.ok(toDto(saved));
+    }
+
+    /**
+     * Actualiza los datos de UNA fila del catálogo, mezclando los valores recibidos
+     * con los existentes. Permite edición en vivo desde el preview del AdminPanel.
+     * El body debe ser un JSON { "data": { "columna": "nuevoValor", ... } }.
+     * Solo se pisan las columnas presentes en data; el resto se mantiene.
+     */
+    @PutMapping("/{catalogId}/rows/{rowId}")
+    @Transactional
+    public ResponseEntity<?> updateRow(@PathVariable Long catalogId,
+                                       @PathVariable Long rowId,
+                                       @RequestBody Map<String, Object> body) {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        Optional<ExcelCatalogRow> opt = rowRepo.findById(rowId);
+        if (opt.isEmpty()) {
+            resp.put("ok", false); resp.put("error", "row not found");
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(resp);
+        }
+        ExcelCatalogRow row = opt.get();
+        if (!catalogId.equals(row.getCatalogId())) {
+            resp.put("ok", false); resp.put("error", "row does not belong to catalog " + catalogId);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(resp);
+        }
+
+        Object dataObj = body != null ? body.get("data") : null;
+        if (!(dataObj instanceof Map)) {
+            resp.put("ok", false); resp.put("error", "missing 'data' object in body");
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(resp);
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> patch = (Map<String, Object>) dataObj;
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> existing = json.readValue(row.getDataJson(), Map.class);
+            // Merge conservando orden original y agregando claves nuevas al final.
+            Map<String, Object> merged = new LinkedHashMap<>(existing);
+            for (Map.Entry<String, Object> en : patch.entrySet()) {
+                merged.put(en.getKey(), en.getValue());
+            }
+            row.setDataJson(json.writeValueAsString(merged));
+            rowRepo.save(row);
+
+            resp.put("ok", true);
+            resp.put("id", row.getId());
+            resp.put("sheet", row.getSheetName());
+            resp.put("row", row.getRowIndex());
+            resp.put("data", merged);
+            log.info("excel_catalog_row actualizada: catalog={} row_id={} keys={}", catalogId, rowId, patch.keySet());
+            return ResponseEntity.ok(resp);
+        } catch (Exception e) {
+            log.error("Error actualizando fila {}", rowId, e);
+            resp.put("ok", false); resp.put("error", "Error procesando fila: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(resp);
+        }
     }
 
     @DeleteMapping("/{id}")
