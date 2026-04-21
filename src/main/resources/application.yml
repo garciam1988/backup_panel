@@ -43,6 +43,7 @@ coincidir:
   sales-email: sales@yes-traveluy.com
   anthropic-key: ${ANTHROPIC_API_KEY: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}
   aerodatabox-key: ${AERODATABOX_KEY:fc175a9236msh0a91a116322637cp14d398jsn1823a5291f18}
+  pexels-key: ${PEXELS_API_KEY:b51KmSnWuEzUNnHaLRii9d7iVIJGcH4FoPKj1d3nJAzUL1c2hZsnRlwN}
   mail-from: ${MAIL_FROM:YES Travel <info@yes-traveluy.com>}
   mail-bcc: ${MAIL_BCC:info@yes-traveluy.com}
   admin-panel-url: ${ADMIN_PANEL_URL:http://localhost:3002}

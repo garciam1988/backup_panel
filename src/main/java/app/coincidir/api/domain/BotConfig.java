@@ -156,6 +156,18 @@ public class BotConfig {
     @Column(name = "panel_orders_config_json", columnDefinition = "TEXT")
     private String panelOrdersConfigJson;
 
+    // ── Menú digital (carta / catálogo visual) ──────────────────────────
+    @Column(name = "menu_enabled", nullable = false)
+    private Boolean menuEnabled = Boolean.FALSE;
+
+    /** Label que aparece en el FAB del bot. "Menú" / "Carta" / "Productos" / "Servicios". */
+    @Column(name = "menu_label", length = 60)
+    private String menuLabel;
+
+    /** Config JSON del menú: style, columnas de Excel a mapear, categorías, etc. */
+    @Column(name = "menu_config_json", columnDefinition = "TEXT")
+    private String menuConfigJson;
+
     /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).

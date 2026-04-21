@@ -96,6 +96,9 @@ public class BotConfigController {
         if (dto.fraudEmailTemplate != null)    entity.setFraudEmailTemplate(dto.fraudEmailTemplate);
         if (dto.enabledPanels != null)         entity.setEnabledPanels(dto.enabledPanels);
         if (dto.panelOrdersConfigJson != null) entity.setPanelOrdersConfigJson(dto.panelOrdersConfigJson);
+        if (dto.menuEnabled != null)           entity.setMenuEnabled(dto.menuEnabled);
+        if (dto.menuLabel != null)             entity.setMenuLabel(dto.menuLabel);
+        if (dto.menuConfigJson != null)        entity.setMenuConfigJson(dto.menuConfigJson);
 
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
@@ -206,6 +209,25 @@ public class BotConfigController {
                 "{\"key\":\"CANCELLED\",\"label\":\"Cancelado\",\"color\":\"#ef4444\"}" +
             "]}"
         );
+        e.setMenuEnabled(Boolean.FALSE);
+        e.setMenuLabel("Menú");
+        e.setMenuConfigJson(
+            "{" +
+            "\"style\":\"elegant\"," +
+            "\"primaryColor\":\"#0f2756\"," +
+            "\"accentColor\":\"#c9a961\"," +
+            "\"tagline\":\"Nuestra propuesta\"," +
+            "\"showSearch\":true," +
+            "\"showCategoryTabs\":true," +
+            "\"showFeatured\":true," +
+            "\"allowOrdering\":true," +
+            "\"orderButtonLabel\":\"Agregar al pedido\"," +
+            "\"emptyStateText\":\"Pronto sumamos más opciones. ¡Contactanos!\"," +
+            "\"itemsPerPage\":8," +
+            "\"catalogId\":null," +
+            "\"columnMapping\":{\"name\":\"nombre\",\"description\":\"descripcion\",\"price\":\"precio\",\"category\":\"categoria\",\"tags\":\"tags\",\"featured\":\"destacado\",\"imageName\":\"imagen\"}" +
+            "}"
+        );
         return repo.save(e);
     }
 
@@ -259,6 +281,10 @@ public class BotConfigController {
         public String  enabledPanels;
         public String  panelOrdersConfigJson;
 
+        public Boolean menuEnabled;
+        public String  menuLabel;
+        public String  menuConfigJson;
+
         public Instant updatedAt;
         public String  updatedBy;
 
@@ -297,6 +323,9 @@ public class BotConfigController {
             d.fraudEmailTemplate     = e.getFraudEmailTemplate();
             d.enabledPanels          = e.getEnabledPanels();
             d.panelOrdersConfigJson  = e.getPanelOrdersConfigJson();
+            d.menuEnabled            = e.getMenuEnabled();
+            d.menuLabel              = e.getMenuLabel();
+            d.menuConfigJson         = e.getMenuConfigJson();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;
