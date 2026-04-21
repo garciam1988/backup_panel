@@ -147,6 +147,15 @@ public class BotConfig {
     @Column(name = "fraud_email_template", columnDefinition = "LONGTEXT")
     private String fraudEmailTemplate;
 
+    // ── Paneles externos (/panel) ────────────────────────────────────────
+    /** CSV de paneles activos. Por ahora solo "orders". */
+    @Column(name = "enabled_panels", length = 300)
+    private String enabledPanels;
+
+    /** Config JSON específica para el panel de pedidos (moneda, estados, etc). */
+    @Column(name = "panel_orders_config_json", columnDefinition = "TEXT")
+    private String panelOrdersConfigJson;
+
     /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).

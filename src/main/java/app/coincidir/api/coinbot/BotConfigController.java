@@ -94,6 +94,8 @@ public class BotConfigController {
         if (dto.fraudAlertEmails != null)      entity.setFraudAlertEmails(dto.fraudAlertEmails);
         if (dto.fraudEmailSubject != null)     entity.setFraudEmailSubject(dto.fraudEmailSubject);
         if (dto.fraudEmailTemplate != null)    entity.setFraudEmailTemplate(dto.fraudEmailTemplate);
+        if (dto.enabledPanels != null)         entity.setEnabledPanels(dto.enabledPanels);
+        if (dto.panelOrdersConfigJson != null) entity.setPanelOrdersConfigJson(dto.panelOrdersConfigJson);
 
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
@@ -186,6 +188,24 @@ public class BotConfigController {
             "{\"id\":\"qa-4\",\"label\":\"✈️ Info de vuelo\",\"text\":\"¿Cuáles son los datos de mi vuelo?\"}" +
             "]"
         );
+        e.setEnabledPanels("");   // sin paneles activos por default
+        e.setPanelOrdersConfigJson(
+            "{" +
+            "\"currency\":\"ARS\"," +
+            "\"currencySymbol\":\"$\"," +
+            "\"orderNumberPrefix\":\"P-\"," +
+            "\"allowDelivery\":true," +
+            "\"allowPickup\":true," +
+            "\"soundOnNewOrder\":true," +
+            "\"statuses\":[" +
+                "{\"key\":\"NEW\",\"label\":\"Nuevo\",\"color\":\"#2563eb\"}," +
+                "{\"key\":\"CONFIRMED\",\"label\":\"Confirmado\",\"color\":\"#7c3aed\"}," +
+                "{\"key\":\"IN_PREPARATION\",\"label\":\"En preparación\",\"color\":\"#f59e0b\"}," +
+                "{\"key\":\"READY_FOR_PICKUP\",\"label\":\"Listo para retirar\",\"color\":\"#10b981\"}," +
+                "{\"key\":\"DELIVERED\",\"label\":\"Entregado\",\"color\":\"#64748b\"}," +
+                "{\"key\":\"CANCELLED\",\"label\":\"Cancelado\",\"color\":\"#ef4444\"}" +
+            "]}"
+        );
         return repo.save(e);
     }
 
@@ -236,6 +256,9 @@ public class BotConfigController {
         public String  fraudEmailSubject;
         public String  fraudEmailTemplate;
 
+        public String  enabledPanels;
+        public String  panelOrdersConfigJson;
+
         public Instant updatedAt;
         public String  updatedBy;
 
@@ -272,6 +295,8 @@ public class BotConfigController {
             d.fraudAlertEmails       = e.getFraudAlertEmails();
             d.fraudEmailSubject      = e.getFraudEmailSubject();
             d.fraudEmailTemplate     = e.getFraudEmailTemplate();
+            d.enabledPanels          = e.getEnabledPanels();
+            d.panelOrdersConfigJson  = e.getPanelOrdersConfigJson();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;
