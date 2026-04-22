@@ -99,6 +99,7 @@ public class BotConfigController {
         if (dto.menuEnabled != null)           entity.setMenuEnabled(dto.menuEnabled);
         if (dto.menuLabel != null)             entity.setMenuLabel(dto.menuLabel);
         if (dto.menuConfigJson != null)        entity.setMenuConfigJson(dto.menuConfigJson);
+        if (dto.language != null)              entity.setLanguage(dto.language);
 
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
@@ -228,6 +229,7 @@ public class BotConfigController {
             "\"columnMapping\":{\"name\":\"nombre\",\"description\":\"descripcion\",\"price\":\"precio\",\"category\":\"categoria\",\"tags\":\"tags\",\"featured\":\"destacado\",\"imageName\":\"imagen\"}" +
             "}"
         );
+        e.setLanguage("es");
         return repo.save(e);
     }
 
@@ -285,6 +287,8 @@ public class BotConfigController {
         public String  menuLabel;
         public String  menuConfigJson;
 
+        public String  language;
+
         public Instant updatedAt;
         public String  updatedBy;
 
@@ -326,6 +330,7 @@ public class BotConfigController {
             d.menuEnabled            = e.getMenuEnabled();
             d.menuLabel              = e.getMenuLabel();
             d.menuConfigJson         = e.getMenuConfigJson();
+            d.language               = e.getLanguage();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;

@@ -168,6 +168,13 @@ public class BotConfig {
     @Column(name = "menu_config_json", columnDefinition = "TEXT")
     private String menuConfigJson;
 
+    // ── Idioma del bot ──────────────────────────────────────────────────
+    // Códigos ISO: "es" (Español, default), "en" (English), "pt-BR" (Português Brasil).
+    // Afecta: textos de UI del bot, idioma en que Claude responde, y auto-traducción
+    // de descripciones de productos del Excel.
+    @Column(name = "language", length = 8)
+    private String language;
+
     /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).
