@@ -80,6 +80,12 @@
       <artifactId>poi-ooxml</artifactId>
       <version>5.2.5</version>
     </dependency>
+    <!-- PDFBox para extraer texto de PDFs (sistema Fuentes de datos) -->
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.3</version>
+    </dependency>
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>

@@ -176,6 +176,14 @@ public class BotConfig {
     private String language;
 
     /**
+     * Biblioteca de voces guardadas (ElevenLabs). JSON array de objetos:
+     * [{"id":"uuid","name":"Laura","voiceId":"21m00Tcm...","createdAt":"..."}]
+     * El admin puede agregar/eliminar; la voz activa sigue siendo customVoiceId.
+     */
+    @Column(name = "saved_voices_json", columnDefinition = "TEXT")
+    private String savedVoicesJson;
+
+    /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).
      * Se inyecta al system prompt del bot. Configurable por bot/marca desde /admin.

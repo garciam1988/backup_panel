@@ -59,6 +59,44 @@ public class ExcelCatalog {
     @Column(name = "active", nullable = false)
     private Boolean active = true;
 
+    // ── Extensión Fuente de datos ────────────────────────────────────────
+    // Hoy los "excel_catalog" son Excel/CSV, pero la tabla se usa como el
+    // catálogo general de "fuentes" — PDF, Word, TXT, imágenes (OCR),
+    // subidos directo o desde URL remota con auto-refresh.
+
+    /** Tipo de fuente: "file" (upload manual) | "url" (descarga remota). */
+    @Column(name = "source_type", nullable = false, length = 20)
+    private String sourceType = "file";
+
+    /** MIME type detectado. Ej: "application/pdf", "image/png", etc. */
+    @Column(name = "mime_type", length = 120)
+    private String mimeType;
+
+    /** URL original si se cargó desde remoto. */
+    @Column(name = "original_url", length = 2000)
+    private String originalUrl;
+
+    /** Último refresh exitoso (solo si sourceType = "url"). */
+    @Column(name = "last_refreshed_at")
+    private Instant lastRefreshedAt;
+
+    /** Cada cuántas horas auto-actualizar desde la URL. null = nunca. */
+    @Column(name = "auto_refresh_hours")
+    private Integer autoRefreshHours;
+
+    /**
+     * Texto extraído del archivo (PDF/Word/TXT/OCR). Para Excel/CSV puede
+     * quedar null (se usa la representación tabular como hoy). Para el resto
+     * es el contenido que se inyecta al prompt del bot (Modo A).
+     */
+    @Lob
+    @Column(name = "extracted_text", columnDefinition = "MEDIUMTEXT")
+    private String extractedText;
+
+    /** Cantidad aproximada de tokens del extractedText. Se calcula al subir/refrescar. */
+    @Column(name = "token_count")
+    private Integer tokenCount;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

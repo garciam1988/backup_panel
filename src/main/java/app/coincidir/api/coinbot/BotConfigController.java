@@ -100,6 +100,7 @@ public class BotConfigController {
         if (dto.menuLabel != null)             entity.setMenuLabel(dto.menuLabel);
         if (dto.menuConfigJson != null)        entity.setMenuConfigJson(dto.menuConfigJson);
         if (dto.language != null)              entity.setLanguage(dto.language);
+        if (dto.savedVoicesJson != null)       entity.setSavedVoicesJson(dto.savedVoicesJson);
 
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
@@ -288,6 +289,7 @@ public class BotConfigController {
         public String  menuConfigJson;
 
         public String  language;
+        public String  savedVoicesJson;
 
         public Instant updatedAt;
         public String  updatedBy;
@@ -331,6 +333,7 @@ public class BotConfigController {
             d.menuLabel              = e.getMenuLabel();
             d.menuConfigJson         = e.getMenuConfigJson();
             d.language               = e.getLanguage();
+            d.savedVoicesJson        = e.getSavedVoicesJson();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;
