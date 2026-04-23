@@ -184,6 +184,18 @@ public class BotConfig {
     private String savedVoicesJson;
 
     /**
+     * URL del sitio web oficial del bot/marca. Se guarda siempre que el admin
+     * la cargue (aún con el toggle de uso en false). Si websiteEnabled=true,
+     * se inyecta al system prompt para que el bot pueda sugerirla/usarla.
+     */
+    @Column(name = "website_url", length = 500)
+    private String websiteUrl;
+
+    /** Si es true, el bot es consciente del sitio y puede derivar al cliente. */
+    @Column(name = "website_enabled")
+    private Boolean websiteEnabled;
+
+    /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).
      * Se inyecta al system prompt del bot. Configurable por bot/marca desde /admin.
