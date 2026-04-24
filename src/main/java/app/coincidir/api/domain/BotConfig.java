@@ -195,6 +195,22 @@ public class BotConfig {
     @Column(name = "website_enabled")
     private Boolean websiteEnabled;
 
+    /** Handle o URL de Instagram. Se guarda como lo cargó el admin; se normaliza al mostrar. */
+    @Column(name = "instagram_handle", length = 200)
+    private String instagramHandle;
+
+    /** Si es true, el bot sabe del Instagram y puede derivar/mencionarlo. */
+    @Column(name = "instagram_enabled")
+    private Boolean instagramEnabled;
+
+    /** Handle o URL de Facebook (página/perfil). */
+    @Column(name = "facebook_handle", length = 200)
+    private String facebookHandle;
+
+    /** Si es true, el bot sabe del Facebook y puede derivar/mencionarlo. */
+    @Column(name = "facebook_enabled")
+    private Boolean facebookEnabled;
+
     /**
      * Prompt libre que le dice al bot qué datos debe pedirle al usuario
      * al iniciar la charla (nombre, apellido, DNI, email, teléfono, etc.).

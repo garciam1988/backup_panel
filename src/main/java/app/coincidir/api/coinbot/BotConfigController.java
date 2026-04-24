@@ -103,6 +103,10 @@ public class BotConfigController {
         if (dto.savedVoicesJson != null)       entity.setSavedVoicesJson(dto.savedVoicesJson);
         if (dto.websiteUrl != null)            entity.setWebsiteUrl(dto.websiteUrl);
         if (dto.websiteEnabled != null)        entity.setWebsiteEnabled(dto.websiteEnabled);
+        if (dto.instagramHandle != null)       entity.setInstagramHandle(dto.instagramHandle);
+        if (dto.instagramEnabled != null)      entity.setInstagramEnabled(dto.instagramEnabled);
+        if (dto.facebookHandle != null)        entity.setFacebookHandle(dto.facebookHandle);
+        if (dto.facebookEnabled != null)       entity.setFacebookEnabled(dto.facebookEnabled);
 
         if (auth != null && auth.getName() != null) {
             entity.setUpdatedBy(auth.getName());
@@ -294,6 +298,10 @@ public class BotConfigController {
         public String  savedVoicesJson;
         public String  websiteUrl;
         public Boolean websiteEnabled;
+        public String  instagramHandle;
+        public Boolean instagramEnabled;
+        public String  facebookHandle;
+        public Boolean facebookEnabled;
 
         public Instant updatedAt;
         public String  updatedBy;
@@ -340,6 +348,10 @@ public class BotConfigController {
             d.savedVoicesJson        = e.getSavedVoicesJson();
             d.websiteUrl             = e.getWebsiteUrl();
             d.websiteEnabled         = e.getWebsiteEnabled();
+            d.instagramHandle        = e.getInstagramHandle();
+            d.instagramEnabled       = e.getInstagramEnabled();
+            d.facebookHandle         = e.getFacebookHandle();
+            d.facebookEnabled        = e.getFacebookEnabled();
             d.updatedAt              = e.getUpdatedAt();
             d.updatedBy              = e.getUpdatedBy();
             return d;
