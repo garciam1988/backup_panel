@@ -48,6 +48,7 @@ public class DataSourceController {
     private final ExcelCatalogService catalogService;
     private final DataSourceIngestService ingestService;
     private final RemoteFileDownloader downloader;
+    private final DataSourceMigrationService migrationService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────────────────────────────────────────────────────────────────────
@@ -402,5 +403,42 @@ public class DataSourceController {
         public Boolean included;
         public String text;     // solo si included=true
         public String warning;  // solo si included=false
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Migración Fuente → Tabla del bot (Excel/CSV → BotTable)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Devuelve un preview de cómo quedaría la migración: slug propuesto,
+     * columnas auto-tipadas con muestras, conteo de filas. NO modifica nada.
+     * El admin lo usa para decidir antes de confirmar el migrate.
+     */
+    @GetMapping("/{id}/migration-preview")
+    @Transactional(readOnly = true)
+    public DataSourceMigrationService.MigrationPreview migrationPreview(@PathVariable Long id) {
+        try {
+            return migrationService.preview(id);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    /**
+     * Ejecuta la migración: crea BotTable + records, desactiva la Fuente.
+     * Body: { slug?, name?, injectFields? } — los 3 son opcionales (si no
+     * se envía slug/name se usan los sugeridos del preview).
+     */
+    @PostMapping("/{id}/migrate-to-bot-table")
+    @Transactional
+    public DataSourceMigrationService.MigrationResult migrate(
+            @PathVariable Long id,
+            @RequestBody(required = false) DataSourceMigrationService.MigrationRequest req) {
+        if (req == null) req = new DataSourceMigrationService.MigrationRequest();
+        try {
+            return migrationService.migrate(id, req);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 }
