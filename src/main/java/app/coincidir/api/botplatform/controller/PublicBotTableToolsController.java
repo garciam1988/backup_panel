@@ -132,6 +132,106 @@ public class PublicBotTableToolsController {
         return resp;
     }
 
+    /**
+     * Lista todas las tablas activas (sin records). Usado por el menú
+     * digital del admin para que el dropdown "Origen del menú" pueda
+     * mostrar las tablas como opción además de los catálogos Excel.
+     */
+    @GetMapping("/tables")
+    @Transactional(readOnly = true)
+    public PublicTablesResponse listTables() {
+        PublicTablesResponse resp = new PublicTablesResponse();
+        resp.tables = new ArrayList<>();
+        for (BotTable t : tableRepo.findByActiveTrueOrderByNameAsc()) {
+            PublicTableEntry e = new PublicTableEntry();
+            e.slug = t.getSlug();
+            e.name = t.getName();
+            e.description = t.getDescription();
+            try {
+                JsonNode cols = objectMapper.readTree(t.getColumnsJson());
+                List<String> colList = new ArrayList<>();
+                for (JsonNode c : cols) colList.add(c.get("name").asText());
+                e.columns = colList;
+            } catch (Exception ex) {
+                e.columns = List.of();
+            }
+            resp.tables.add(e);
+        }
+        return resp;
+    }
+
+    /**
+     * Devuelve TODOS los records activos de una tabla en formato JSON.
+     * Usado por el menú digital para pintar items como si fueran filas
+     * de un Excel.
+     *
+     * Importante: este endpoint es público (sin auth) porque el menú
+     * digital se sirve a clientes anónimos. Mismo modelo que el de
+     * Excel catalog (que también es accesible públicamente para que el
+     * menú visual del bot funcione sin login).
+     */
+    @GetMapping("/{slug}/records")
+    @Transactional(readOnly = true)
+    public PublicRecordsResponse getRecords(@PathVariable String slug) {
+        PublicRecordsResponse resp = new PublicRecordsResponse();
+        resp.rows = new ArrayList<>();
+
+        BotTable t = tableRepo.findBySlug(slug)
+                .filter(bt -> Boolean.TRUE.equals(bt.getActive()))
+                .orElse(null);
+        if (t == null) {
+            // No tirar 404 — devolvemos vacío para que el front muestre
+            // "menú no disponible" sin romper.
+            return resp;
+        }
+        resp.tableSlug = t.getSlug();
+        resp.tableName = t.getName();
+        try {
+            JsonNode cols = objectMapper.readTree(t.getColumnsJson());
+            List<String> colList = new ArrayList<>();
+            for (JsonNode c : cols) colList.add(c.get("name").asText());
+            resp.columns = colList;
+        } catch (Exception ignore) {
+            resp.columns = List.of();
+        }
+
+        for (BotTableRecord r : recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId())) {
+            try {
+                PublicRow row = new PublicRow();
+                row.id = r.getId();
+                row.data = objectMapper.readTree(r.getDataJson());
+                resp.rows.add(row);
+            } catch (Exception ex) {
+                log.warn("[public-records] error parseando record {}: {}", r.getId(), ex.getMessage());
+            }
+        }
+        return resp;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class PublicTablesResponse {
+        public List<PublicTableEntry> tables;
+    }
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class PublicTableEntry {
+        public String slug;
+        public String name;
+        public String description;
+        public List<String> columns;
+    }
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class PublicRecordsResponse {
+        public String tableSlug;
+        public String tableName;
+        public List<String> columns;
+        public List<PublicRow> rows;
+    }
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class PublicRow {
+        public Long id;
+        public JsonNode data;
+    }
+
     private String serializeTableAsMarkdown(BotTable t) throws Exception {
         com.fasterxml.jackson.databind.JsonNode cols = objectMapper.readTree(t.getColumnsJson());
         List<String> allColNames = new ArrayList<>();
