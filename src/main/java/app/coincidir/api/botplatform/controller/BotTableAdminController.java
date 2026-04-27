@@ -2,10 +2,17 @@ package app.coincidir.api.botplatform.controller;
 
 import app.coincidir.api.botplatform.domain.BotTable;
 import app.coincidir.api.botplatform.domain.BotTableRecord;
+import app.coincidir.api.botplatform.domain.EmailLog;
+import app.coincidir.api.botplatform.domain.EmailTemplate;
 import app.coincidir.api.botplatform.repository.BotTableRecordRepository;
 import app.coincidir.api.botplatform.repository.BotTableRepository;
+import app.coincidir.api.botplatform.repository.EmailLogRepository;
+import app.coincidir.api.botplatform.repository.EmailTemplateRepository;
+import app.coincidir.api.botplatform.service.BotTableChangeEvent;
+import app.coincidir.api.botplatform.service.BotTableEmailService;
 import app.coincidir.api.botplatform.service.BotTableImportExportService;
 import app.coincidir.api.botplatform.service.BotTableService;
+import app.coincidir.api.botplatform.service.EmailReminderJob;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -24,6 +32,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * BotTableAdminController — CRUD desde /admin de las tablas custom del bot
@@ -50,6 +59,11 @@ public class BotTableAdminController {
     private final BotTableRecordRepository recordRepo;
     private final BotTableService service;
     private final BotTableImportExportService ioService;
+    private final EmailTemplateRepository emailTemplateRepo;
+    private final EmailLogRepository emailLogRepo;
+    private final BotTableEmailService emailService;
+    private final EmailReminderJob reminderJob;
+    private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────── Tablas ───────
@@ -140,7 +154,10 @@ public class BotTableAdminController {
             rec.setTableId(t.getId());
             rec.setDataJson(normalized);
             rec.setSource("admin");
-            return toRecordDto(recordRepo.save(rec));
+            rec = recordRepo.save(rec);
+            // Mismo evento que cuando lo crea el bot — el listener decide si manda mail.
+            try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created")); } catch (Exception ignored) {}
+            return toRecordDto(rec);
         } catch (BotTableService.SchemaError e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
@@ -161,7 +178,9 @@ public class BotTableAdminController {
             }
             String normalized = service.validateAndNormalizeRecord(t, current);
             rec.setDataJson(normalized);
-            return toRecordDto(recordRepo.save(rec));
+            rec = recordRepo.save(rec);
+            try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); } catch (Exception ignored) {}
+            return toRecordDto(rec);
         } catch (BotTableService.SchemaError e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         } catch (Exception e) {
@@ -172,7 +191,17 @@ public class BotTableAdminController {
     @DeleteMapping("/records/{recordId}")
     @Transactional
     public void deleteRecord(@PathVariable Long recordId) {
-        recordRepo.deleteById(recordId);
+        Optional<BotTableRecord> opt = recordRepo.findById(recordId);
+        if (opt.isEmpty()) return;
+        BotTableRecord rec = opt.get();
+        BotTable t = tableRepo.findById(rec.getTableId()).orElse(null);
+        // Disparar evento ANTES de borrar — el listener necesita poder leer
+        // los datos del registro para extraer el email del destinatario.
+        if (t != null) {
+            try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "cancelled")); }
+            catch (Exception ignored) {}
+        }
+        recordRepo.delete(rec);
     }
 
     // ─────── Import / Export ───────
@@ -258,6 +287,177 @@ public class BotTableAdminController {
         return s.replaceAll("[^A-Za-z0-9 _\\-.áéíóúÁÉÍÓÚñÑ]+", "_").trim();
     }
 
+    // ─────── Email Templates ───────
+
+    private static final List<String> VALID_EVENTS = List.of("created", "updated", "cancelled", "reminder");
+
+    /** Lista todos los templates de una tabla. */
+    @GetMapping("/{id}/email-templates")
+    @Transactional(readOnly = true)
+    public List<EmailTemplateDto> listTemplates(@PathVariable Long id) {
+        tableRepo.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return emailTemplateRepo.findByTableIdOrderByEventAsc(id).stream()
+                .map(this::toTemplateDto).toList();
+    }
+
+    /** Crea o actualiza un template (upsert por table_id + event). */
+    @PostMapping("/{id}/email-templates")
+    @Transactional
+    public EmailTemplateDto saveTemplate(@PathVariable Long id, @RequestBody EmailTemplateRequest req) {
+        BotTable t = tableRepo.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (req == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "body vacío");
+        if (req.event == null || !VALID_EVENTS.contains(req.event))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "event inválido. Válidos: " + VALID_EVENTS);
+        if (req.subject == null || req.subject.isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "subject requerido");
+        if (req.bodyHtml == null || req.bodyHtml.isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "bodyHtml requerido");
+        if (req.replyTo != null && !req.replyTo.isBlank() && !BotTableEmailService.isValidEmail(req.replyTo.trim()))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "replyTo no es un email válido");
+
+        EmailTemplate tpl = emailTemplateRepo.findByTableIdAndEvent(t.getId(), req.event)
+                .orElseGet(EmailTemplate::new);
+        tpl.setTableId(t.getId());
+        tpl.setEvent(req.event);
+        tpl.setActive(req.active != null ? req.active : true);
+        tpl.setSubject(req.subject.trim());
+        tpl.setBodyHtml(req.bodyHtml);
+        tpl.setReplyTo(req.replyTo != null && !req.replyTo.isBlank() ? req.replyTo.trim() : null);
+        tpl.setFromDisplayName(req.fromDisplayName != null && !req.fromDisplayName.isBlank()
+                ? req.fromDisplayName.trim() : null);
+        return toTemplateDto(emailTemplateRepo.save(tpl));
+    }
+
+    @DeleteMapping("/email-templates/{templateId}")
+    @Transactional
+    public void deleteTemplate(@PathVariable Long templateId) {
+        emailTemplateRepo.deleteById(templateId);
+    }
+
+    /**
+     * Test endpoint: dispara el email para el último registro de la tabla
+     * (o uno específico si pasaste recordId). Útil para que el admin pruebe
+     * cómo queda el mail real antes de poner el template "en producción".
+     */
+    @PostMapping("/{id}/email-templates/{templateId}/test")
+    @Transactional
+    public TestSendResponse testSendTemplate(
+            @PathVariable Long id,
+            @PathVariable Long templateId,
+            @RequestParam(required = false) Long recordId,
+            @RequestParam(required = false) String to) {
+        BotTable t = tableRepo.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        EmailTemplate tpl = emailTemplateRepo.findById(templateId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "template no existe"));
+        if (!tpl.getTableId().equals(t.getId()))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "template no pertenece a esta tabla");
+
+        // Buscar registro: el específico, el último, o ninguno (placeholders quedan vacíos).
+        BotTableRecord rec = null;
+        if (recordId != null) {
+            rec = recordRepo.findById(recordId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "record no existe"));
+            if (!rec.getTableId().equals(t.getId()))
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "record no pertenece a esta tabla");
+        } else {
+            List<BotTableRecord> recs = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+            if (!recs.isEmpty()) rec = recs.get(0);
+        }
+
+        TestSendResponse resp = new TestSendResponse();
+
+        if (to != null && !to.isBlank()) {
+            // Modo: enviar a casilla custom (no a la del record)
+            BotTableEmailService.TestSendResult r = emailService.sendTestToAddress(t, rec, tpl, to);
+            resp.attempted = true;
+            resp.recordId = rec != null ? rec.getId() : null;
+            resp.recipient = r.recipient;
+            if (r.ok) {
+                resp.message = "Test enviado a " + r.recipient + ". Revisá tu casilla (puede tardar unos segundos).";
+            } else {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Error al enviar: " + (r.error != null ? r.error : "desconocido"));
+            }
+        } else {
+            // Modo legacy: usar el email de la columna del record (requiere record con email válido)
+            if (rec == null)
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "La tabla no tiene registros — agregá uno primero o pasá el parámetro 'to' para enviar a una casilla específica.");
+            emailService.fireEventSync(t, rec, tpl.getEvent());
+            resp.attempted = true;
+            resp.recordId = rec.getId();
+            resp.message = "Test enviado al email del registro. Revisá la sección Auditoría o tu casilla.";
+        }
+        return resp;
+    }
+
+    /** Lista los logs de email enviados (paginado). */
+    @GetMapping("/{id}/email-logs")
+    @Transactional(readOnly = true)
+    public EmailLogsResponse listEmailLogs(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "30") int size) {
+        if (size <= 0) size = 30;
+        if (size > 100) size = 100;
+        org.springframework.data.domain.Page<EmailLog> p =
+                emailLogRepo.findByTableIdOrderBySentAtDesc(id,
+                        org.springframework.data.domain.PageRequest.of(page, size));
+        EmailLogsResponse resp = new EmailLogsResponse();
+        resp.items = p.getContent().stream().map(this::toLogDto).toList();
+        resp.total = p.getTotalElements();
+        resp.page = page;
+        resp.size = size;
+        return resp;
+    }
+
+    /**
+     * Dispara el job de recordatorios manualmente para una tabla. Útil para
+     * testing — el cron sigue corriendo cada 15 min, pero esto te deja
+     * verificar al toque sin esperar.
+     */
+    @PostMapping("/{id}/run-reminders")
+    public RunRemindersResponse runReminders(@PathVariable Long id) {
+        BotTable t = tableRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        EmailReminderJob.ProcessResult res = reminderJob.processTable(t);
+        RunRemindersResponse out = new RunRemindersResponse();
+        out.tableSlug = res.tableSlug;
+        out.sent = res.sent;
+        out.skipped = res.skipped;
+        out.errors = res.errors;
+        return out;
+    }
+
+    private EmailTemplateDto toTemplateDto(EmailTemplate tpl) {
+        EmailTemplateDto d = new EmailTemplateDto();
+        d.id = tpl.getId();
+        d.tableId = tpl.getTableId();
+        d.event = tpl.getEvent();
+        d.active = tpl.getActive();
+        d.subject = tpl.getSubject();
+        d.bodyHtml = tpl.getBodyHtml();
+        d.replyTo = tpl.getReplyTo();
+        d.fromDisplayName = tpl.getFromDisplayName();
+        d.updatedAt = tpl.getUpdatedAt();
+        return d;
+    }
+
+    private EmailLogDto toLogDto(EmailLog l) {
+        EmailLogDto d = new EmailLogDto();
+        d.id = l.getId();
+        d.tableId = l.getTableId();
+        d.recordId = l.getRecordId();
+        d.event = l.getEvent();
+        d.recipient = l.getRecipient();
+        d.subject = l.getSubject();
+        d.ok = l.getOk();
+        d.error = l.getError();
+        d.sentAt = l.getSentAt();
+        return d;
+    }
+
     // ─────── Mapping ───────
 
     private void applyTableRequest(BotTable t, TableSaveRequest r) {
@@ -269,6 +469,9 @@ public class BotTableAdminController {
         if (r.confirmUpdate != null) t.setConfirmUpdate(r.confirmUpdate);
         if (r.confirmDelete != null) t.setConfirmDelete(r.confirmDelete);
         if (r.injectToPrompt != null) t.setInjectToPrompt(r.injectToPrompt);
+        if (r.emailColumn != null) t.setEmailColumn(r.emailColumn.isBlank() ? null : r.emailColumn.trim());
+        if (r.reminderDateColumn != null) t.setReminderDateColumn(r.reminderDateColumn.isBlank() ? null : r.reminderDateColumn.trim());
+        if (r.reminderHoursBefore != null) t.setReminderHoursBefore(r.reminderHoursBefore <= 0 ? null : r.reminderHoursBefore);
     }
 
     private TableDto toDto(BotTable t) {
@@ -283,6 +486,9 @@ public class BotTableAdminController {
         d.confirmUpdate = t.getConfirmUpdate();
         d.confirmDelete = t.getConfirmDelete();
         d.injectToPrompt = t.getInjectToPrompt();
+        d.emailColumn = t.getEmailColumn();
+        d.reminderDateColumn = t.getReminderDateColumn();
+        d.reminderHoursBefore = t.getReminderHoursBefore();
         d.recordCount = recordRepo.countByTableId(t.getId());
         d.createdAt = t.getCreatedAt();
         d.updatedAt = t.getUpdatedAt();
@@ -313,6 +519,9 @@ public class BotTableAdminController {
         public Boolean confirmUpdate;
         public Boolean confirmDelete;
         public Boolean injectToPrompt;
+        public String emailColumn;
+        public String reminderDateColumn;
+        public Integer reminderHoursBefore;
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -327,6 +536,9 @@ public class BotTableAdminController {
         public Boolean confirmUpdate;
         public Boolean confirmDelete;
         public Boolean injectToPrompt;
+        public String emailColumn;
+        public String reminderDateColumn;
+        public Integer reminderHoursBefore;
         public Long recordCount;
         public Instant createdAt;
         public Instant updatedAt;
@@ -353,5 +565,67 @@ public class BotTableAdminController {
         public Long total;
         public Integer page;
         public Integer size;
+    }
+
+    // ─────── Email DTOs ───────
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class EmailTemplateRequest {
+        public String event;
+        public Boolean active;
+        public String subject;
+        public String bodyHtml;
+        public String replyTo;
+        public String fromDisplayName;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class EmailTemplateDto {
+        public Long id;
+        public Long tableId;
+        public String event;
+        public Boolean active;
+        public String subject;
+        public String bodyHtml;
+        public String replyTo;
+        public String fromDisplayName;
+        public Instant updatedAt;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class TestSendResponse {
+        public Boolean attempted;
+        public Long recordId;
+        public String recipient;
+        public String message;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class EmailLogDto {
+        public Long id;
+        public Long tableId;
+        public Long recordId;
+        public String event;
+        public String recipient;
+        public String subject;
+        public Boolean ok;
+        public String error;
+        public Instant sentAt;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class EmailLogsResponse {
+        public List<EmailLogDto> items;
+        public Long total;
+        public Integer page;
+        public Integer size;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class RunRemindersResponse {
+        public String tableSlug;
+        public Integer sent;
+        public Integer skipped;
+        public Integer errors;
     }
 }

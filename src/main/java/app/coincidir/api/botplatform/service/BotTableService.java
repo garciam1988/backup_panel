@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -41,6 +42,7 @@ public class BotTableService {
 
     private final BotTableRepository tableRepo;
     private final BotTableRecordRepository recordRepo;
+    private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public static final List<String> VALID_TYPES = List.of("text", "number", "date", "datetime", "boolean", "select");
@@ -413,6 +415,11 @@ public class BotTableService {
         rec.setSource("bot");
         rec = recordRepo.save(rec);
 
+        // Disparamos evento "created" — los listeners (ej: BotTableEmailService)
+        // se enteran y mandan email si la tabla tiene template configurado.
+        try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created")); }
+        catch (Exception e) { log.warn("[BotTable] no pude publicar evento created: {}", e.getMessage()); }
+
         r.ok = true;
         ObjectNode resp = objectMapper.createObjectNode();
         resp.put("created", true);
@@ -451,6 +458,9 @@ public class BotTableService {
         rec.setDataJson(normalized);
         recordRepo.save(rec);
 
+        try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); }
+        catch (Exception e) { log.warn("[BotTable] no pude publicar evento updated: {}", e.getMessage()); }
+
         r.ok = true;
         ObjectNode resp = objectMapper.createObjectNode();
         resp.put("updated", true);
@@ -476,7 +486,17 @@ public class BotTableService {
         Optional<BotTableRecord> opt = recordRepo.findById(id);
         if (opt.isEmpty() || !opt.get().getTableId().equals(t.getId()))
             throw new SchemaError("Registro " + id + " no encontrado en tabla '" + slug + "'");
-        recordRepo.delete(opt.get());
+
+        BotTableRecord toDelete = opt.get();
+        // Disparamos evento "cancelled" ANTES de borrar — el listener necesita
+        // poder leer los datos del registro (ej: el email del cliente para mandarle
+        // la notificación de cancelación). El evento se publica sincrónicamente
+        // pero el envío de email es @Async así que tiene tiempo de capturar el
+        // record antes de que se borre la transacción.
+        try { eventPublisher.publishEvent(new BotTableChangeEvent(t, toDelete, "cancelled")); }
+        catch (Exception e) { log.warn("[BotTable] no pude publicar evento cancelled: {}", e.getMessage()); }
+
+        recordRepo.delete(toDelete);
 
         r.ok = true;
         r.output = "{\"deleted\":true,\"id\":" + id + "}";

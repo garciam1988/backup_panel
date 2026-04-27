@@ -72,6 +72,30 @@ public class BotTable {
     @Column(name = "inject_to_prompt", nullable = false)
     private Boolean injectToPrompt = false;
 
+    /**
+     * Nombre de la columna de la tabla que contiene el email del destinatario.
+     * Si está vacío o la columna no existe, no se envían emails para esta tabla.
+     * Ej: "email", "correo", "mail_cliente".
+     */
+    @Column(name = "email_column", length = 80)
+    private String emailColumn;
+
+    /**
+     * Nombre de la columna que contiene la fecha de referencia del recordatorio.
+     * Debe ser de tipo "date" o "datetime". Si está vacío, los recordatorios
+     * automáticos están deshabilitados para esta tabla (aunque el template
+     * "reminder" siga existiendo y se pueda probar manualmente).
+     */
+    @Column(name = "reminder_date_column", length = 80)
+    private String reminderDateColumn;
+
+    /**
+     * Cuántas horas antes de la fecha de referencia mandar el recordatorio.
+     * Default: 24hs. Configurable: 1, 2, 6, 12, 24, 48, 72, 168 (1 semana).
+     */
+    @Column(name = "reminder_hours_before")
+    private Integer reminderHoursBefore = 24;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
