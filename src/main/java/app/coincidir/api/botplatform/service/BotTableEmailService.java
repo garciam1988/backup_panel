@@ -12,7 +12,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
@@ -58,6 +60,21 @@ public class BotTableEmailService {
     private final JavaMailSender mailSender;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Self-injection (lazy para evitar ciclo en construcción) — necesario para
+     * que la invocación a fireEvent() desde el @TransactionalEventListener pase
+     * por el proxy de Spring. Si llamáramos directamente a fireEvent (this.fireEvent),
+     * Spring NO aplica @Async ni @Transactional (self-invocation). Resultado: el
+     * envío corría sincrónicamente y SIN transacción, por lo que JPA no podía
+     * leer el template ni escribir el EmailLog → el evento quedaba mudo.
+     */
+    private BotTableEmailService self;
+
+    @Autowired
+    public void setSelf(@Lazy BotTableEmailService self) {
+        this.self = self;
+    }
+
     @Value("${coincidir.mail-from:YES Travel <info@yes-traveluy.com>}")
     private String defaultMailFrom;
 
@@ -96,7 +113,10 @@ public class BotTableEmailService {
             }
         }
         // El método dentro hace @Async → corre en thread aparte sin bloquear.
-        fireEvent(ev.table, ev.record, ev.event);
+        // Se invoca a través del proxy (self) para que Spring aplique @Async y
+        // @Transactional correctamente — una llamada this.fireEvent(...) no las
+        // aplicaría por self-invocation.
+        self.fireEvent(ev.table, ev.record, ev.event);
     }
 
     /**
