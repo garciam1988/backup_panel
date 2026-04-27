@@ -41,8 +41,10 @@ public class BotTable {
     @Column(name = "slug", nullable = false, length = 60, unique = true)
     private String slug;
 
-    /** Descripción opcional. La lee Claude para entender qué guarda esta tabla. */
-    @Column(name = "description", length = 500)
+    /** Descripción opcional. La lee Claude para entender qué guarda esta tabla.
+     *  Se usa TEXT (no VARCHAR) porque las descripciones útiles para Claude
+     *  suelen incluir reglas/contexto y pueden pasar fácil los 500 chars. */
+    @Column(name = "description", columnDefinition = "TEXT")
     private String description;
 
     /** Schema de columnas serializado en JSON. */
