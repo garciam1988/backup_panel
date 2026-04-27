@@ -89,8 +89,10 @@ public class PublicBotTableToolsController {
             @RequestParam String toolName,
             @RequestParam(required = false) String tableSlug) {
         NeedsConfirmResponse r = new NeedsConfirmResponse();
-        // list_bot_tables y query_records nunca piden confirmación
-        if ("list_bot_tables".equals(toolName) || "query_records".equals(toolName)) {
+        // list_bot_tables, query_records y get_record_detail nunca piden confirmación (read-only)
+        if ("list_bot_tables".equals(toolName)
+                || "query_records".equals(toolName)
+                || "get_record_detail".equals(toolName)) {
             r.needsConfirm = false;
             return r;
         }
@@ -132,8 +134,29 @@ public class PublicBotTableToolsController {
 
     private String serializeTableAsMarkdown(BotTable t) throws Exception {
         com.fasterxml.jackson.databind.JsonNode cols = objectMapper.readTree(t.getColumnsJson());
-        List<String> colNames = new ArrayList<>();
-        for (com.fasterxml.jackson.databind.JsonNode c : cols) colNames.add(c.get("name").asText());
+        List<String> allColNames = new ArrayList<>();
+        for (com.fasterxml.jackson.databind.JsonNode c : cols) allColNames.add(c.get("name").asText());
+
+        // Si la tabla tiene injectFields configurado, filtramos las columnas a
+        // inyectar. Las columnas no listadas NO se inyectan (el bot las consulta
+        // vía get_record_detail si las necesita). Esto reduce mucho el tamaño
+        // del prompt en catálogos grandes.
+        List<String> colNames;
+        String injectFields = t.getInjectFields();
+        if (injectFields != null && !injectFields.isBlank()) {
+            java.util.Set<String> allowed = new java.util.HashSet<>();
+            for (String f : injectFields.split(",")) {
+                String trimmed = f.trim();
+                if (!trimmed.isEmpty()) allowed.add(trimmed);
+            }
+            colNames = new ArrayList<>();
+            for (String c : allColNames) if (allowed.contains(c)) colNames.add(c);
+            // Fallback defensivo: si el filtro no matchea ninguna columna real
+            // (admin tipeó mal los nombres), volvemos al comportamiento original.
+            if (colNames.isEmpty()) colNames = allColNames;
+        } else {
+            colNames = allColNames;
+        }
 
         StringBuilder sb = new StringBuilder();
         // Header

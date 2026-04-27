@@ -296,6 +296,18 @@ public class BotTableService {
                 "\"id\":{\"type\":\"integer\"}" +
             "},\"required\":[\"table\",\"id\"]}"));
 
+        tools.add(buildTool("get_record_detail",
+            "Devuelve TODOS los campos de un registro específico, incluidos los que no se inyectan al prompt por defecto. " +
+            "Útil cuando una tabla tiene injectFields configurado y solo se inyectan algunas columnas (ej: nombre y precio) — " +
+            "usá esta tool para obtener el detalle completo (ej: descripción, ingredientes, tags) cuando el cliente pregunte. " +
+            "Buscá por id (preferido) o por nombre exacto en una columna específica. " + tablesDescStr,
+            "{\"type\":\"object\",\"properties\":{" +
+                "\"table\":{\"type\":\"string\",\"description\":\"Slug de la tabla\"}," +
+                "\"id\":{\"type\":\"integer\",\"description\":\"ID del registro (preferido si lo conocés)\"}," +
+                "\"matchField\":{\"type\":\"string\",\"description\":\"Si no tenés id, nombre de columna para matchear (ej: 'nombre' o 'producto')\"}," +
+                "\"matchValue\":{\"type\":\"string\",\"description\":\"Valor exacto a matchear en matchField\"}" +
+            "},\"required\":[\"table\"]}"));
+
         return tools;
     }
 
@@ -332,11 +344,12 @@ public class BotTableService {
         ToolResult r = new ToolResult();
         try {
             switch (toolName) {
-                case "list_bot_tables": return doListTables(r);
-                case "query_records":   return doQuery(r, args);
-                case "add_record":      return doAdd(r, args, confirmed, sessionId);
-                case "update_record":   return doUpdate(r, args, confirmed);
-                case "delete_record":   return doDelete(r, args, confirmed);
+                case "list_bot_tables":   return doListTables(r);
+                case "query_records":     return doQuery(r, args);
+                case "add_record":        return doAdd(r, args, confirmed, sessionId);
+                case "update_record":     return doUpdate(r, args, confirmed);
+                case "delete_record":     return doDelete(r, args, confirmed);
+                case "get_record_detail": return doGetDetail(r, args);
                 default:
                     r.ok = false;
                     r.output = "Tool desconocida: " + toolName;
@@ -547,6 +560,56 @@ public class BotTableService {
 
         r.ok = true;
         r.output = "{\"deleted\":true,\"id\":" + id + "}";
+        return r;
+    }
+
+    /**
+     * doGetDetail — devuelve TODOS los campos de un registro específico.
+     * Útil cuando la tabla tiene injectFields configurado y el bot necesita
+     * info que no está en el prompt (ej: descripción del producto). Búsqueda
+     * por id (preferido) o por matchField/matchValue.
+     */
+    private ToolResult doGetDetail(ToolResult r, JsonNode args) throws Exception {
+        String slug = args.path("table").asText("");
+        BotTable t = mustFindTable(slug);
+
+        BotTableRecord rec = null;
+        if (args.has("id") && !args.path("id").isNull()) {
+            long id = args.path("id").asLong();
+            Optional<BotTableRecord> opt = recordRepo.findById(id);
+            if (opt.isPresent() && opt.get().getTableId().equals(t.getId())) {
+                rec = opt.get();
+            }
+        } else if (args.has("matchField") && args.has("matchValue")) {
+            String field = args.path("matchField").asText("");
+            String value = args.path("matchValue").asText("");
+            if (!field.isBlank() && !value.isBlank()) {
+                List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+                String valueLower = value.toLowerCase();
+                for (BotTableRecord candidate : all) {
+                    JsonNode data = objectMapper.readTree(candidate.getDataJson());
+                    JsonNode v = data.get(field);
+                    if (v == null || v.isNull()) continue;
+                    if (v.asText("").toLowerCase().equals(valueLower)) {
+                        rec = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (rec == null) {
+            r.ok = false;
+            r.output = "{\"error\":\"Registro no encontrado. Si buscás por nombre, " +
+                "asegurate que matchField sea una columna válida y matchValue exacto.\"}";
+            return r;
+        }
+
+        ObjectNode out = objectMapper.createObjectNode();
+        out.put("id", rec.getId());
+        out.set("data", objectMapper.readTree(rec.getDataJson()));
+        r.ok = true;
+        r.output = objectMapper.writeValueAsString(out);
         return r;
     }
 

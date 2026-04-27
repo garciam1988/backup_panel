@@ -300,7 +300,7 @@ public class BotTableAdminController {
                 .map(this::toTemplateDto).toList();
     }
 
-    /** Crea o actualiza un template (upsert por table_id + even    t). */
+    /** Crea o actualiza un template (upsert por table_id + event). */
     @PostMapping("/{id}/email-templates")
     @Transactional
     public EmailTemplateDto saveTemplate(@PathVariable Long id, @RequestBody EmailTemplateRequest req) {
@@ -469,6 +469,7 @@ public class BotTableAdminController {
         if (r.confirmUpdate != null) t.setConfirmUpdate(r.confirmUpdate);
         if (r.confirmDelete != null) t.setConfirmDelete(r.confirmDelete);
         if (r.injectToPrompt != null) t.setInjectToPrompt(r.injectToPrompt);
+        if (r.injectFields != null) t.setInjectFields(r.injectFields.isBlank() ? null : r.injectFields.trim());
         if (r.emailColumn != null) t.setEmailColumn(r.emailColumn.isBlank() ? null : r.emailColumn.trim());
         if (r.reminderDateColumn != null) t.setReminderDateColumn(r.reminderDateColumn.isBlank() ? null : r.reminderDateColumn.trim());
         if (r.reminderHoursBefore != null) t.setReminderHoursBefore(r.reminderHoursBefore <= 0 ? null : r.reminderHoursBefore);
@@ -486,6 +487,7 @@ public class BotTableAdminController {
         d.confirmUpdate = t.getConfirmUpdate();
         d.confirmDelete = t.getConfirmDelete();
         d.injectToPrompt = t.getInjectToPrompt();
+        d.injectFields = t.getInjectFields();
         d.emailColumn = t.getEmailColumn();
         d.reminderDateColumn = t.getReminderDateColumn();
         d.reminderHoursBefore = t.getReminderHoursBefore();
@@ -519,6 +521,7 @@ public class BotTableAdminController {
         public Boolean confirmUpdate;
         public Boolean confirmDelete;
         public Boolean injectToPrompt;
+        public String injectFields;
         public String emailColumn;
         public String reminderDateColumn;
         public Integer reminderHoursBefore;
@@ -536,6 +539,7 @@ public class BotTableAdminController {
         public Boolean confirmUpdate;
         public Boolean confirmDelete;
         public Boolean injectToPrompt;
+        public String injectFields;
         public String emailColumn;
         public String reminderDateColumn;
         public Integer reminderHoursBefore;

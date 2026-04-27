@@ -75,6 +75,19 @@ public class BotTable {
     private Boolean injectToPrompt = false;
 
     /**
+     * Si es no-null, lista de columnas (CSV) que se inyectan al prompt cuando
+     * injectToPrompt=true. El resto de columnas NO se inyectan, pero siguen
+     * disponibles vía la tool get_record_detail. Útil para tablas con catálogos
+     * grandes (ej: menú con 100+ productos): inyectás solo nombre/categoría/
+     * precio en el prompt y el bot pide el detalle (descripción, ingredientes,
+     * tags) por tool cuando lo necesita. Si es null o vacío, se inyectan
+     * TODAS las columnas (comportamiento original).
+     * Ejemplo: "producto,categoria,precio,disponible"
+     */
+    @Column(name = "inject_fields", length = 500)
+    private String injectFields;
+
+    /**
      * Nombre de la columna de la tabla que contiene el email del destinatario.
      * Si está vacío o la columna no existe, no se envían emails para esta tabla.
      * Ej: "email", "correo", "mail_cliente".
