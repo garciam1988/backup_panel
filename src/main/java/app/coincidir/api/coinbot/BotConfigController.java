@@ -36,7 +36,14 @@ public class BotConfigController {
     @GetMapping
     @Transactional
     public BotConfigDto get() {
-        BotConfig entity = repo.findById(SINGLETON_ID).orElseGet(this::createDefault);
+        BotConfig entity = repo.findById(SINGLETON_ID).orElseGet(() -> {
+            // Alerta: creación de config default. Si esto aparece después de
+            // un deploy normal (no primera instalación), algo está mal —
+            // significa que la fila se borró/desapareció.
+            log.warn("⚠️ [bot_config] No existe config — creando default. " +
+                     "Si esto NO es la primera instalación, investigar quién borró la fila.");
+            return createDefault();
+        });
         return BotConfigDto.fromEntity(entity);
     }
 
@@ -139,14 +146,13 @@ public class BotConfigController {
     private BotConfig createDefault() {
         BotConfig e = new BotConfig();
         e.setId(SINGLETON_ID);
-        e.setBotName("Lety");
-        e.setBrandName("YES Travel");
-        e.setLogoUrl("/yes-travel-logo.jpg");
+        e.setBotName("Asistente");
+        e.setBrandName("Mi Marca");
+        e.setLogoUrl("");
         e.setBotAvatarUrl("");
         e.setWelcomeMessage(
-            "¡Hola! 👋 Soy **Lety**, de YES Travel.\n\n" +
-            "Estoy acá para ayudarte con todo lo que necesites sobre **tu reserva** ✈️\n\n" +
-            "¿Con qué puedo ayudarte hoy?"
+            "¡Hola! 👋 Soy tu asistente.\n\n" +
+            "Estoy acá para ayudarte. ¿Con qué puedo ayudarte hoy?"
         );
         e.setAllowTts(true);
         e.setAllowUserAudio(true);
@@ -193,10 +199,7 @@ public class BotConfigController {
         );
         e.setQuickAccessJson(
             "[" +
-            "{\"id\":\"qa-1\",\"label\":\"📋 Mi reserva\",\"text\":\"Quiero consultar mi reserva\"}," +
-            "{\"id\":\"qa-2\",\"label\":\"📄 Mis vouchers\",\"text\":\"Necesito mis vouchers\"}," +
-            "{\"id\":\"qa-3\",\"label\":\"💳 Mis pagos\",\"text\":\"¿Cómo está mi plan de pagos?\"}," +
-            "{\"id\":\"qa-4\",\"label\":\"✈️ Info de vuelo\",\"text\":\"¿Cuáles son los datos de mi vuelo?\"}" +
+            "{\"id\":\"qa-1\",\"label\":\"💬 Hacer una consulta\",\"text\":\"Hola, tengo una consulta\"}" +
             "]"
         );
         e.setEnabledPanels("");   // sin paneles activos por default
