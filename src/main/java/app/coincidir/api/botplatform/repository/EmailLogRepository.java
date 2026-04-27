@@ -16,10 +16,10 @@ public interface EmailLogRepository extends JpaRepository<EmailLog, Long> {
 
     Page<EmailLog> findByTableIdOrderBySentAtDesc(Long tableId, Pageable pageable);
 
-    @Query("SELECT COUNT(l) FROM EmailLog l WHERE l.recipient = :recipient AND l.sentAt > :since AND l.ok = true")
+    @Query("SELECT COUNT(l) FROM EmailLog l WHERE l.recipient = :recipient AND l.sentAt > :since AND l.ok = true AND l.event <> 'test'")
     long countByRecipientSince(@Param("recipient") String recipient, @Param("since") Instant since);
 
-    @Query("SELECT COUNT(l) FROM EmailLog l WHERE l.sentAt > :since AND l.ok = true")
+    @Query("SELECT COUNT(l) FROM EmailLog l WHERE l.sentAt > :since AND l.ok = true AND l.event <> 'test'")
     long countSince(@Param("since") Instant since);
 
     @Modifying

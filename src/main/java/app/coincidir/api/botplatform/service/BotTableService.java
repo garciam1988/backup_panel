@@ -417,8 +417,12 @@ public class BotTableService {
 
         // Disparamos evento "created" — los listeners (ej: BotTableEmailService)
         // se enteran y mandan email si la tabla tiene template configurado.
-        try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created")); }
-        catch (Exception e) { log.warn("[BotTable] no pude publicar evento created: {}", e.getMessage()); }
+        try {
+            eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created"));
+            log.info("[BotTable] evento 'created' publicado: tabla={} record={}", t.getSlug(), rec.getId());
+        } catch (Exception e) {
+            log.warn("[BotTable] no pude publicar evento created: {}", e.getMessage());
+        }
 
         r.ok = true;
         ObjectNode resp = objectMapper.createObjectNode();

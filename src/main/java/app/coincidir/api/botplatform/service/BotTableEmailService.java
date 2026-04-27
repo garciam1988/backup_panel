@@ -64,7 +64,7 @@ public class BotTableEmailService {
     @Value("${coincidir.bot-table-email.daily-cap:100}")
     private int dailyCap;
 
-    @Value("${coincidir.bot-table-email.per-recipient-cooldown-seconds:60}")
+    @Value("${coincidir.bot-table-email.per-recipient-cooldown-seconds:10}")
     private int perRecipientCooldownSeconds;
 
     /** Patrón para placeholders {{nombre}}. */
@@ -122,18 +122,30 @@ public class BotTableEmailService {
         // 1) Verificar columna de email en la tabla
         String emailCol = table.getEmailColumn();
         if (emailCol == null || emailCol.isBlank()) {
-            log.debug("[BotTableEmail] tabla {} sin emailColumn — skip", table.getSlug());
+            log.info("[BotTableEmail][SKIP] tabla={} sin emailColumn — no se envía mail (evento {})",
+                    table.getSlug(), event);
+            writeLog(table, record, null, event, null, false,
+                    "skip: la tabla no tiene columna email configurada");
             return;
         }
 
         // 2) Buscar template para este evento
         Optional<EmailTemplate> opt = templateRepo.findByTableIdAndEvent(table.getId(), event);
-        if (opt.isEmpty() || !Boolean.TRUE.equals(opt.get().getActive())) {
-            log.debug("[BotTableEmail] tabla {} sin template activo para evento {} — skip",
+        if (opt.isEmpty()) {
+            log.info("[BotTableEmail][SKIP] tabla={} no tiene template para evento '{}' — no se envía mail",
                     table.getSlug(), event);
+            writeLog(table, record, null, event, null, false,
+                    "skip: no hay template configurado para evento '" + event + "'");
             return;
         }
         EmailTemplate tpl = opt.get();
+        if (!Boolean.TRUE.equals(tpl.getActive())) {
+            log.info("[BotTableEmail][SKIP] tabla={} template '{}' está apagado — no se envía mail",
+                    table.getSlug(), event);
+            writeLog(table, record, tpl, event, null, false,
+                    "skip: template '" + event + "' está marcado como inactivo");
+            return;
+        }
 
         // 3) Extraer email del registro
         JsonNode data;
@@ -145,8 +157,10 @@ public class BotTableEmailService {
         JsonNode emailNode = data.get(emailCol);
         String recipient = emailNode == null || emailNode.isNull() ? null : emailNode.asText("").trim();
         if (recipient == null || recipient.isBlank() || !isValidEmail(recipient)) {
-            log.info("[BotTableEmail] sin email válido en columna '{}' del registro {} — skip",
-                    emailCol, record.getId());
+            log.info("[BotTableEmail][SKIP] tabla={} record={} columna='{}' valor='{}' — email inválido o vacío",
+                    table.getSlug(), record.getId(), emailCol, recipient);
+            writeLog(table, record, tpl, event, recipient, false,
+                    "skip: email inválido o vacío en columna '" + emailCol + "' del registro");
             return;
         }
 
