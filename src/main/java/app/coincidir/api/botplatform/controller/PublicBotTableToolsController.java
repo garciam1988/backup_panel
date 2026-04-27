@@ -71,7 +71,8 @@ public class PublicBotTableToolsController {
             return resp;
         }
         JsonNode args = req.args != null ? req.args : objectMapper.createObjectNode();
-        BotTableService.ToolResult r = service.executeTool(req.toolName, args, Boolean.TRUE.equals(req.confirmed));
+        BotTableService.ToolResult r = service.executeTool(
+                req.toolName, args, Boolean.TRUE.equals(req.confirmed), req.sessionId);
         resp.ok = r.ok;
         resp.output = r.output;
         resp.requiresConfirmation = r.requiresConfirmation;
@@ -209,6 +210,9 @@ public class PublicBotTableToolsController {
         public String toolName;
         public JsonNode args;
         public Boolean confirmed;
+        /** ID de sesión del chat. Sirve para asociar el record creado a la
+         *  sesión que lo originó (necesario para mensajes proactivos). */
+        public String sessionId;
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)

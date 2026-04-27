@@ -47,6 +47,14 @@ public class BotTableRecord {
     @Column(name = "source", length = 20)
     private String source;
 
+    /**
+     * ID de la sesión del chat que creó el registro (si fue creado por el bot).
+     * Sirve para que las reglas proactivas sepan a qué sesión enviar el mensaje
+     * cuando se dispara un trigger. NULL si fue creado desde /admin o import.
+     */
+    @Column(name = "session_id", length = 120)
+    private String sessionId;
+
     @PrePersist
     void onCreate() {
         Instant now = Instant.now();

@@ -2,6 +2,7 @@ package app.coincidir.api.botplatform.service;
 
 import app.coincidir.api.botplatform.domain.BotTable;
 import app.coincidir.api.botplatform.domain.BotTableRecord;
+import app.coincidir.api.botplatform.domain.ProactiveRule;
 import app.coincidir.api.botplatform.repository.BotTableRecordRepository;
 import app.coincidir.api.botplatform.repository.BotTableRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -16,10 +17,12 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -44,6 +47,14 @@ public class BotTableService {
     private final BotTableRecordRepository recordRepo;
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** Inyectado lazy para evitar ciclo (ProactiveRuleService podría depender
+     *  de servicios que dependen de este). */
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.context.annotation.Lazy
+    private ProactiveRuleService proactiveRuleService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private app.coincidir.api.botplatform.repository.ProactiveRuleRepository proactiveRuleRepo;
 
     public static final List<String> VALID_TYPES = List.of("text", "number", "date", "datetime", "boolean", "select");
     private static final Pattern SLUG_PATTERN = Pattern.compile("^[a-z][a-z0-9_]{0,59}$");
@@ -312,12 +323,18 @@ public class BotTableService {
 
     /** Ejecuta una tool. Si requiere confirmación, devuelve requiresConfirmation=true sin ejecutar. */
     public ToolResult executeTool(String toolName, JsonNode args, boolean confirmed) {
+        return executeTool(toolName, args, confirmed, null);
+    }
+
+    /** Versión con sessionId — usada por el endpoint público para asociar el
+     *  record creado a la sesión del chat (necesario para reglas proactivas). */
+    public ToolResult executeTool(String toolName, JsonNode args, boolean confirmed, String sessionId) {
         ToolResult r = new ToolResult();
         try {
             switch (toolName) {
                 case "list_bot_tables": return doListTables(r);
                 case "query_records":   return doQuery(r, args);
-                case "add_record":      return doAdd(r, args, confirmed);
+                case "add_record":      return doAdd(r, args, confirmed, sessionId);
                 case "update_record":   return doUpdate(r, args, confirmed);
                 case "delete_record":   return doDelete(r, args, confirmed);
                 default:
@@ -395,7 +412,7 @@ public class BotTableService {
         return true;
     }
 
-    private ToolResult doAdd(ToolResult r, JsonNode args, boolean confirmed) throws Exception {
+    private ToolResult doAdd(ToolResult r, JsonNode args, boolean confirmed, String sessionId) throws Exception {
         String slug = args.path("table").asText("");
         BotTable t = mustFindTable(slug);
         JsonNode data = args.path("data");
@@ -413,6 +430,9 @@ public class BotTableService {
         rec.setTableId(t.getId());
         rec.setDataJson(normalized);
         rec.setSource("bot");
+        if (sessionId != null && !sessionId.isBlank()) {
+            rec.setSessionId(sessionId);
+        }
         rec = recordRepo.save(rec);
 
         // Disparamos evento "created" — los listeners (ej: BotTableEmailService)
@@ -501,6 +521,29 @@ public class BotTableService {
         catch (Exception e) { log.warn("[BotTable] no pude publicar evento cancelled: {}", e.getMessage()); }
 
         recordRepo.delete(toDelete);
+
+        // Reglas proactivas: si la tabla tiene reglas con contextColumn, limpiamos
+        // las marcas de "ya disparado" para el contexto del record borrado. Así,
+        // si el contexto vuelve a abrirse en el futuro (ej: la mesa 5 que se
+        // cobró, recibe nuevos comensales más tarde), las reglas vuelven a poder
+        // dispararse desde cero.
+        try {
+            List<ProactiveRule> rules = proactiveRuleRepo.findByTableIdOrderByIdAsc(t.getId());
+            JsonNode deletedData = objectMapper.readTree(toDelete.getDataJson());
+            Set<String> processedContexts = new HashSet<>();
+            for (ProactiveRule rule : rules) {
+                String ctxCol = rule.getContextColumn();
+                if (ctxCol == null || ctxCol.isBlank()) continue;
+                JsonNode v = deletedData.get(ctxCol);
+                if (v == null || v.isNull()) continue;
+                String contextKey = v.asText("").trim();
+                if (contextKey.isEmpty()) continue;
+                if (!processedContexts.add(contextKey)) continue;
+                proactiveRuleService.clearFiredForContext(t.getId(), contextKey);
+            }
+        } catch (Exception e) {
+            log.warn("[BotTable] error limpiando marcas proactivas: {}", e.getMessage());
+        }
 
         r.ok = true;
         r.output = "{\"deleted\":true,\"id\":" + id + "}";

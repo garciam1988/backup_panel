@@ -300,7 +300,7 @@ public class BotTableAdminController {
                 .map(this::toTemplateDto).toList();
     }
 
-    /** Crea o actualiza un template (upsert por table_id + event). */
+    /** Crea o actualiza un template (upsert por table_id + even    t). */
     @PostMapping("/{id}/email-templates")
     @Transactional
     public EmailTemplateDto saveTemplate(@PathVariable Long id, @RequestBody EmailTemplateRequest req) {
