@@ -277,7 +277,60 @@ public class BotTableEmailService {
         JsonNode v = data.get(key);
         if (v == null || v.isNull()) return "";
         if (v.isBoolean()) return v.asBoolean() ? "Sí" : "No";
-        return v.asText();
+        return formatValueForDisplay(v);
+    }
+
+    /**
+     * Convierte un valor del registro a string "lindo" para mostrar en el email.
+     *
+     * Reglas:
+     *  - Números enteros disfrazados de decimal (2.0, 9.0): se muestran sin el ".0"
+     *  - Strings con formato ISO datetime (2026-04-27T21:30:00): se reformatean
+     *    a "27/04/2026 21:30 hs"
+     *  - Strings con formato ISO date (2026-04-27): se reformatean a "27/04/2026"
+     *  - Resto: se devuelve tal cual
+     *
+     * Esto es necesario porque el bot guarda "cantidad de personas" como number
+     * (queda 2.0 en el JSON) y "fecha y hora reserva" como datetime ISO. Sin
+     * este formateo, los emails quedan con texto técnico.
+     */
+    private String formatValueForDisplay(JsonNode v) {
+        // Caso 1: número
+        if (v.isNumber()) {
+            double d = v.asDouble();
+            // Si es un entero (2.0, 9.0, 1500.0) lo mostramos sin decimales
+            if (d == Math.floor(d) && !Double.isInfinite(d)) {
+                return String.valueOf((long) d);
+            }
+            // Si tiene decimales reales (12.50), los mostramos con 2 dígitos máximo
+            return String.format(java.util.Locale.US, "%.2f", d).replaceAll("0+$", "").replaceAll("\\.$", "");
+        }
+
+        String s = v.asText();
+        if (s == null || s.isEmpty()) return "";
+
+        // Caso 2: ISO datetime "2026-04-27T21:30:00" o "2026-04-27T21:30:00.000"
+        // El bot guarda los datetime así porque MySQL los devuelve en formato ISO.
+        if (s.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:?\\d{2})?$")) {
+            try {
+                // Parseo flexible: cortamos en el primer punto/zona y dejamos solo
+                // la parte hasta los segundos
+                String clean = s.split("\\.")[0].replaceAll("[Z+-].*$", "");
+                java.time.LocalDateTime dt = java.time.LocalDateTime.parse(clean);
+                return dt.format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")) + " hs";
+            } catch (Exception ignore) { /* fall through */ }
+        }
+
+        // Caso 3: ISO date "2026-04-27"
+        if (s.matches("^\\d{4}-\\d{2}-\\d{2}$")) {
+            try {
+                java.time.LocalDate d = java.time.LocalDate.parse(s);
+                return d.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+            } catch (Exception ignore) { /* fall through */ }
+        }
+
+        // Caso 4: string normal — devolver tal cual
+        return s;
     }
 
     /**
