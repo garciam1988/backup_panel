@@ -473,6 +473,7 @@ public class BotTableAdminController {
         if (r.emailColumn != null) t.setEmailColumn(r.emailColumn.isBlank() ? null : r.emailColumn.trim());
         if (r.reminderDateColumn != null) t.setReminderDateColumn(r.reminderDateColumn.isBlank() ? null : r.reminderDateColumn.trim());
         if (r.reminderHoursBefore != null) t.setReminderHoursBefore(r.reminderHoursBefore <= 0 ? null : r.reminderHoursBefore);
+        if (r.panelConfigJson != null) t.setPanelConfigJson(r.panelConfigJson.isBlank() ? null : r.panelConfigJson);
     }
 
     private TableDto toDto(BotTable t) {
@@ -491,6 +492,7 @@ public class BotTableAdminController {
         d.emailColumn = t.getEmailColumn();
         d.reminderDateColumn = t.getReminderDateColumn();
         d.reminderHoursBefore = t.getReminderHoursBefore();
+        d.panelConfigJson = t.getPanelConfigJson();
         d.recordCount = recordRepo.countByTableId(t.getId());
         d.createdAt = t.getCreatedAt();
         d.updatedAt = t.getUpdatedAt();
@@ -525,6 +527,7 @@ public class BotTableAdminController {
         public String emailColumn;
         public String reminderDateColumn;
         public Integer reminderHoursBefore;
+        public String panelConfigJson;
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -543,6 +546,7 @@ public class BotTableAdminController {
         public String emailColumn;
         public String reminderDateColumn;
         public Integer reminderHoursBefore;
+        public String panelConfigJson;
         public Long recordCount;
         public Instant createdAt;
         public Instant updatedAt;

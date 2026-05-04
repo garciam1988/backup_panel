@@ -111,6 +111,40 @@ public class BotTable {
     @Column(name = "reminder_hours_before")
     private Integer reminderHoursBefore = 24;
 
+    /**
+     * Configuración del panel de administración (/panel) para esta tabla.
+     * JSON con la siguiente forma:
+     * {
+     *   "enabled": true,
+     *   "icon": "📅",
+     *   "viewType": "calendar",          // calendar | table | kanban (default)
+     *   "enabledViews": ["calendar","gantt","table","kanban","stats"],
+     *   "calendarConfig": {
+     *     "dateColumn": "fecha",
+     *     "titleColumn": "nombre",
+     *     "statusColumn": "estado",      // null si no hay
+     *     "personsColumn": "personas",   // null si no hay
+     *     "tableColumn": "mesa",         // null si no se trabaja con mesas
+     *     "durationMinutes": 90,         // duración default por reserva
+     *     "tables": [                    // mesas físicas (solo si tableColumn != null)
+     *       { "id":"M1", "label":"Mesa 1", "capacity":4 },
+     *       ...
+     *     ],
+     *     "autoAssignTable": true,
+     *     "businessHours": { "start": "12:00", "end": "00:00" }
+     *   },
+     *   "kanbanConfig": { "groupBy": "estado" },
+     *   "tableConfig":  { "visibleColumns": ["nombre","fecha","personas","estado"] },
+     *   "charts": [
+     *     { "type":"bar",    "groupBy":"date:fecha:day",  "title":"Reservas por día" },
+     *     { "type":"donut",  "groupBy":"estado",          "title":"Por estado" },
+     *     { "type":"kpi",    "metric":"sum:personas",     "title":"Comensales total" }
+     *   ]
+     * }
+     */
+    @Column(name = "panel_config_json", columnDefinition = "TEXT")
+    private String panelConfigJson;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
