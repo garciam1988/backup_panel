@@ -71,12 +71,41 @@ public class CoinBotController {
     private final GroupServiceMenuService            groupServiceMenuService;
     private final JwtService                         jwtService;
     private final UserAccountRepository              userAccountRepo;
+    private final app.coincidir.api.repository.BotConfigRepository botConfigRepo;
 
     @Value("${coincidir.mail-from:${coincidir.sales-email:no-reply@coincidir.com}}")
     private String mailFrom;
 
     @Value("${coincidir.admin-panel-url:http://localhost:3002}")
     private String adminPanelUrl;
+
+    /**
+     * Resuelve la URL base del admin panel para llamadas server-to-server.
+     * Prioridad:
+     *   1. bot_config.voucher_api_base_url (configurable desde /admin)
+     *   2. application.yml coincidir.admin-panel-url (env ADMIN_PANEL_URL)
+     *   3. http://localhost:3002 (default del @Value)
+     *
+     * Hace trim + remueve trailing slash para que la concatenación con el
+     * path sea siempre correcta.
+     */
+    private String resolveAdminPanelUrl() {
+        try {
+            return botConfigRepo.findById(1L)
+                    .map(c -> c.getVoucherApiBaseUrl())
+                    .filter(s -> s != null && !s.isBlank())
+                    .map(s -> {
+                        String trimmed = s.trim();
+                        return trimmed.endsWith("/")
+                                ? trimmed.substring(0, trimmed.length() - 1)
+                                : trimmed;
+                    })
+                    .orElse(adminPanelUrl);
+        } catch (Exception e) {
+            log.warn("[CoinBot] No pude leer bot_config.voucher_api_base_url, usando fallback: {}", e.getMessage());
+            return adminPanelUrl;
+        }
+    }
 
     /** Cache del JWT admin para llamadas server-to-server al admin panel. */
     private volatile String cachedAdminToken = null;
@@ -151,7 +180,7 @@ public class CoinBotController {
                 groupId, serviceMenuItemId, recipientMemberId);
         StringBuilder params = new StringBuilder("?serviceMenuItemId=").append(serviceMenuItemId);
         if (recipientMemberId != null) params.append("&recipientMemberId=").append(recipientMemberId);
-        final String adminUrl   = adminPanelUrl + "/api/admin/groups/" + groupId + "/vouchers" + params;
+        final String adminUrl   = resolveAdminPanelUrl() + "/api/admin/groups/" + groupId + "/vouchers" + params;
         final String adminToken = getAdminToken();
 
         // Reintento: algunos vouchers (ej. aéreos con muchos segmentos/pasajeros)
@@ -219,7 +248,7 @@ public class CoinBotController {
                 groupId, serviceMenuItemId, recipientMemberId);
         try {
             String bodyJson   = buildVoucherRequestJson(serviceMenuItemId, "PDF", recipientMemberId);
-            String adminUrl   = adminPanelUrl + "/api/admin/groups/" + groupId + "/vouchers";
+            String adminUrl   = resolveAdminPanelUrl() + "/api/admin/groups/" + groupId + "/vouchers";
             String adminToken = getAdminToken();
             log.info("[CoinBot] voucher-pdf → admin panel POST {}", adminUrl);
 
@@ -278,7 +307,7 @@ public class CoinBotController {
                 body.groupId(), body.serviceMenuItemId(), body.recipientMemberId());
         try {
             String bodyJson   = buildVoucherRequestJson(body.serviceMenuItemId(), "EMAIL", body.recipientMemberId());
-            String adminUrl   = adminPanelUrl + "/api/admin/groups/" + body.groupId() + "/vouchers";
+            String adminUrl   = resolveAdminPanelUrl() + "/api/admin/groups/" + body.groupId() + "/vouchers";
             String adminToken = getAdminToken();
             log.info("[CoinBot] voucher-email → admin panel POST {}", adminUrl);
 

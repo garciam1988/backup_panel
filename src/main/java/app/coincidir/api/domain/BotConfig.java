@@ -185,6 +185,19 @@ public class BotConfig {
     @Column(name = "vouchers_enabled", nullable = false)
     private Boolean vouchersEnabled = Boolean.FALSE;
 
+    /**
+     * URL base del admin panel del cliente que expone /api/admin/groups/{id}/vouchers.
+     * Si está vacía o null, CoinBotController cae al valor configurado en
+     * application.yml (coincidir.admin-panel-url, controlable vía env ADMIN_PANEL_URL).
+     *
+     * Configurable desde /admin (sección "Permisos del bot" → "Tools nativas de vouchers").
+     * Permite que distintos bots apunten a backends de vouchers distintos sin redeployar.
+     *
+     * Ej: "https://admin.yes-traveluy.com" (sin trailing slash).
+     */
+    @Column(name = "voucher_api_base_url", length = 500)
+    private String voucherApiBaseUrl;
+
     // ── Idioma del bot ──────────────────────────────────────────────────
     // Códigos ISO: "es" (Español, default), "en" (English), "pt-BR" (Português Brasil).
     // Afecta: textos de UI del bot, idioma en que Claude responde, y auto-traducción

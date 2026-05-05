@@ -107,6 +107,7 @@ public class BotConfigController {
         if (dto.menuLabel != null)             entity.setMenuLabel(dto.menuLabel);
         if (dto.menuConfigJson != null)        entity.setMenuConfigJson(dto.menuConfigJson);
         if (dto.vouchersEnabled != null)       entity.setVouchersEnabled(dto.vouchersEnabled);
+        if (dto.voucherApiBaseUrl != null)     entity.setVoucherApiBaseUrl(dto.voucherApiBaseUrl);
         if (dto.language != null)              entity.setLanguage(dto.language);
         if (dto.savedVoicesJson != null)       entity.setSavedVoicesJson(dto.savedVoicesJson);
         if (dto.websiteUrl != null)            entity.setWebsiteUrl(dto.websiteUrl);
@@ -299,6 +300,7 @@ public class BotConfigController {
         public String  menuConfigJson;
 
         public Boolean vouchersEnabled;
+        public String  voucherApiBaseUrl;
 
         public String  language;
         public String  savedVoicesJson;
@@ -351,6 +353,7 @@ public class BotConfigController {
             d.menuLabel              = e.getMenuLabel();
             d.menuConfigJson         = e.getMenuConfigJson();
             d.vouchersEnabled        = e.getVouchersEnabled();
+            d.voucherApiBaseUrl      = e.getVoucherApiBaseUrl();
             d.language               = e.getLanguage();
             d.savedVoicesJson        = e.getSavedVoicesJson();
             d.websiteUrl             = e.getWebsiteUrl();
