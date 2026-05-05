@@ -168,6 +168,23 @@ public class BotConfig {
     @Column(name = "menu_config_json", columnDefinition = "TEXT")
     private String menuConfigJson;
 
+    // ── Vouchers (post-venta YES Travel y similares) ────────────────────
+    /**
+     * Si true, expone al bot las tools nativas de vouchers:
+     *   - obtener_vouchers: lista los servicios EMITIDOS del pasajero
+     *   - enviar_voucher_email: envía un voucher PDF al email del pasajero
+     *   - descargar_voucher: descarga el voucher PDF en el navegador
+     *
+     * Estas tools NO son SQL ni HTTP genéricas: dependen de los endpoints
+     * /api/coinbot/voucher-* que arman el PDF client-side (VoucherRenderer).
+     * Para que funcionen, el bot debe estar deployado contra un cliente que
+     * implemente esos endpoints (hoy: YES Travel / Coincidir).
+     *
+     * Default: false (otros bots como ARViz no lo necesitan).
+     */
+    @Column(name = "vouchers_enabled", nullable = false)
+    private Boolean vouchersEnabled = Boolean.FALSE;
+
     // ── Idioma del bot ──────────────────────────────────────────────────
     // Códigos ISO: "es" (Español, default), "en" (English), "pt-BR" (Português Brasil).
     // Afecta: textos de UI del bot, idioma en que Claude responde, y auto-traducción
