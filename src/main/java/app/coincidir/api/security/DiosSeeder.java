@@ -12,26 +12,34 @@ import org.springframework.security.crypto.bcrypt.BCrypt;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.List;
 
 /**
  * DiosSeeder — al arrancar la app, garantiza que existe:
  *  1) Un AppRole "DIOS" con permisos {@code fullAccess=true}, marcado como system.
- *  2) Un PanelUser DIOS hardcodeado por env vars (no se puede borrar).
+ *  2) Un PanelUser DIOS configurado por env vars (no se puede borrar).
  *
- * Variables de entorno (con defaults para dev):
- *  - {@code coincidir.dios.username}  → default "dios"
- *  - {@code coincidir.dios.password}  → default "dios1234"  (sólo para arranque inicial)
- *  - {@code coincidir.dios.display-name} → default "Dios"
+ * Variables de entorno:
+ *  - {@code coincidir.dios.username}     → username (default "dios")
+ *  - {@code coincidir.dios.password}     → password en texto plano (sin default)
+ *  - {@code coincidir.dios.display-name} → display name (default "Dios")
  *
- * Si el usuario DIOS ya existe en la BD, sólo se sincroniza la password
- * cuando la env var indica una password explícita distinta a la default.
- * Si la env var trae el default y el usuario ya tiene password en BD, no
- * la pisamos (porque podría haber sido cambiada legítimamente desde la UI...
- * aunque hoy bloqueamos el cambio de password de DIOS — ver UserController).
+ * Cómo se maneja la password (BCrypt):
+ *  - La password en texto plano sólo existe en la env var. NUNCA se persiste
+ *    en BD ni en logs. En BD se guarda únicamente el hash BCrypt.
+ *  - Cuando el backend arranca, lee la env var y verifica si el hash en BD
+ *    matchea. Si matchea, no hace nada. Si no matchea (o el usuario no existe),
+ *    re-genera el hash y lo guarda. Esto permite rotar la password cambiando
+ *    sólo la env var en Railway y reiniciando.
+ *  - Si la env var está vacía y el usuario YA existe en BD, no se toca el hash
+ *    (asume que se configuró antes y se le borraron las env vars por algún motivo).
+ *  - Si la env var está vacía y el usuario NO existe, se aborta el seed con un
+ *    error ruidoso que indica al admin qué env var configurar.
  *
- * El password de DIOS sólo se cambia regenerando con la env var. Nunca desde la UI.
+ * Razón de no tener default password:
+ *  Tener una default conocida ("dios1234") es un riesgo de seguridad: si alguien
+ *  despliega sin configurar la env var, el sistema queda con un super-admin
+ *  cuya password está en el código fuente y por lo tanto en Git público.
  */
 @Slf4j
 @Component
@@ -39,7 +47,6 @@ import java.util.List;
 public class DiosSeeder {
 
     public static final String DIOS_ROLE_CODE = "DIOS";
-    private static final String DEFAULT_PASSWORD = "dios1234";
 
     private final AppRoleRepository roleRepo;
     private final PanelUserRepository userRepo;
@@ -48,7 +55,8 @@ public class DiosSeeder {
     @Value("${coincidir.dios.username:dios}")
     private String diosUsername;
 
-    @Value("${coincidir.dios.password:" + DEFAULT_PASSWORD + "}")
+    /** Password en texto plano. Sin default — viene únicamente de env var. */
+    @Value("${coincidir.dios.password:}")
     private String diosPassword;
 
     @Value("${coincidir.dios.display-name:Dios}")
@@ -89,27 +97,51 @@ public class DiosSeeder {
         // 2) Asegurar el usuario DIOS
         String username = (diosUsername == null || diosUsername.isBlank()) ? "dios" : diosUsername.trim();
         PanelUser user = userRepo.findByUsername(username).orElse(null);
+        boolean hasPasswordEnv = (diosPassword != null && !diosPassword.isBlank());
 
         if (user == null) {
+            // Usuario nuevo: REQUIERE password vía env var. Si falta, abortamos
+            // con un mensaje muy explícito en los logs para que el admin sepa
+            // qué configurar. No queremos crear un super-admin con password
+            // default conocida.
+            if (!hasPasswordEnv) {
+                log.error("");
+                log.error("════════════════════════════════════════════════════════════════════");
+                log.error("[DIOS-SEED] ⛔ No se puede crear el usuario DIOS '{}'", username);
+                log.error("");
+                log.error("    No hay password configurada. Definí la variable de entorno:");
+                log.error("");
+                log.error("        COINCIDIR_DIOS_PASSWORD=<tu-password-segura>");
+                log.error("");
+                log.error("    En Railway: panel del servicio > Variables > New Variable.");
+                log.error("    En local:   tu .env.local o run config del IDE.");
+                log.error("");
+                log.error("    Una vez configurada, reiniciá el backend.");
+                log.error("    El sistema arrancó pero NO se podrá hacer login como admin.");
+                log.error("════════════════════════════════════════════════════════════════════");
+                log.error("");
+                return;
+            }
+
             user = new PanelUser();
             user.setUsername(username);
             user.setDisplayName(diosDisplayName);
-            user.setPasswordHash(BCrypt.hashpw(safePassword(), BCrypt.gensalt()));
+            user.setPasswordHash(BCrypt.hashpw(diosPassword, BCrypt.gensalt()));
             user.setRole(DIOS_ROLE_CODE);
             user.setRoleId(diosRole.getId());
             user.setActive(Boolean.TRUE);
             user.setIsSystem(Boolean.TRUE);
             user.setCreatedBy("system");
             userRepo.save(user);
-            log.info("[DIOS-SEED] Creado usuario DIOS '{}'", username);
+            log.info("[DIOS-SEED] ✅ Usuario DIOS '{}' creado con password de env var.", username);
             return;
         }
 
-        // El usuario ya existía: nos limitamos a garantizar invariantes:
+        // El usuario ya existía: garantizamos invariantes:
         //   - sigue siendo system
         //   - sigue activo
         //   - rol = DIOS
-        //   - si la env var trae password NO default, la sincronizamos.
+        //   - si la env var trae password, sincronizamos el hash si difiere.
         boolean userDirty = false;
         if (!Boolean.TRUE.equals(user.getIsSystem())) { user.setIsSystem(Boolean.TRUE); userDirty = true; }
         if (!Boolean.TRUE.equals(user.getActive()))   { user.setActive(Boolean.TRUE);   userDirty = true; }
@@ -118,32 +150,37 @@ public class DiosSeeder {
             user.setRoleId(diosRole.getId()); userDirty = true;
         }
 
-        if (diosPassword != null && !diosPassword.isBlank() && !DEFAULT_PASSWORD.equals(diosPassword)) {
+        if (hasPasswordEnv) {
             // Sólo sincronizamos password si no matchea con el hash actual.
-            // (Evita reescribir el hash en cada boot, que cambiaría el salt.)
+            // (Evita reescribir el hash en cada boot, que cambiaría el salt
+            // sin cambiar la password efectiva.)
             try {
                 if (!BCrypt.checkpw(diosPassword, user.getPasswordHash())) {
                     user.setPasswordHash(BCrypt.hashpw(diosPassword, BCrypt.gensalt()));
                     userDirty = true;
-                    log.info("[DIOS-SEED] Password DIOS actualizada desde env vars");
+                    log.info("[DIOS-SEED] 🔄 Password DIOS actualizada desde env var.");
                 }
             } catch (Exception ignored) {
-                // Hash corrupto: re-generamos
+                // Hash corrupto en BD: re-generamos
                 user.setPasswordHash(BCrypt.hashpw(diosPassword, BCrypt.gensalt()));
                 userDirty = true;
+                log.warn("[DIOS-SEED] Hash corrupto detectado, regenerando.");
             }
+        } else {
+            // El usuario existe pero la env var no está. Probablemente alguien
+            // borró la variable post-deploy. NO tocamos el hash existente, pero
+            // logueamos un warning para que el admin sepa que está con una pwd
+            // que no se puede rotar sin la env var.
+            log.warn("[DIOS-SEED] ⚠️  Usuario DIOS '{}' existe pero COINCIDIR_DIOS_PASSWORD " +
+                    "no está configurada. La password actual sigue funcionando, pero no se " +
+                    "puede rotar hasta que definas la env var.", username);
         }
 
         if (userDirty) {
             userRepo.save(user);
-            log.info("[DIOS-SEED] Usuario DIOS '{}' actualizado", username);
+            log.info("[DIOS-SEED] Usuario DIOS '{}' actualizado.", username);
         } else {
-            log.debug("[DIOS-SEED] Usuario DIOS '{}' ya existe y está OK", username);
+            log.debug("[DIOS-SEED] Usuario DIOS '{}' ya existe y está OK.", username);
         }
-    }
-
-    private String safePassword() {
-        if (diosPassword == null || diosPassword.isBlank()) return DEFAULT_PASSWORD;
-        return diosPassword;
     }
 }

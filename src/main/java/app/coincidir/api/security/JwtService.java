@@ -3,7 +3,6 @@ package app.coincidir.api.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,8 +22,10 @@ public class JwtService {
     private long ttlMillis;
 
     public JwtService(
-            @Value("${jwt.secret:8k8L0p0vC9k14y3w3m1k+T1bJ3Vq1Q9WZzqQyvV6f1s8=}") String base64Secret,
-            @Value("${jwt.ttlSeconds:43200}") long ttlSeconds
+            // SIN default. Si no está configurado, jjwt va a tirar un error
+            // claro al construir el SecretKey. El admin sabrá que falta JWT_SECRET.
+            @Value("${jwt.secret:${security.jwt.secret:}}") String base64Secret,
+            @Value("${jwt.ttlSeconds:${security.jwt.ttl-seconds:43200}}") long ttlSeconds
     ) {
         this.base64Secret = base64Secret;
         this.ttlSeconds = ttlSeconds;
@@ -32,7 +33,9 @@ public class JwtService {
 
     @PostConstruct
     void init() {
-        this.key = Keys.hmacShaKeyFor(Decoders.BASE64.decode(base64Secret));
+        // Usamos el decoder tolerante para aceptar Base64 estándar, URL-safe
+        // o texto plano (ver JwtSecretDecoder).
+        this.key = Keys.hmacShaKeyFor(JwtSecretDecoder.decode(base64Secret));
         this.ttlMillis = ttlSeconds * 1000;
     }
 

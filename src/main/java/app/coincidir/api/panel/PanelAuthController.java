@@ -2,10 +2,8 @@ package app.coincidir.api.panel;
 
 import app.coincidir.api.domain.PanelUser;
 import app.coincidir.api.repository.PanelUserRepository;
-import app.coincidir.api.security.PermissionsService;
-import app.coincidir.api.security.PermissionsService.EffectivePermissions;
+import app.coincidir.api.security.JwtSecretDecoder;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -23,13 +21,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * PanelAuthController — login de usuarios del /panel.
+ * PanelAuthController — login de usuarios del /panel (separados del admin).
  *
- * Devuelve, además del token y datos básicos, los permisos efectivos para
- * que el front filtre la lista de paneles. Mantiene el contrato viejo
- * (sigue devolviendo {@code enabledPanels} CSV) PERO también suma:
- *  - {@code panelKeys}  → lista efectiva (override usuario o herencia rol)
- *  - {@code fullAccess} → DIOS bypassea filtros
+ * Genera JWT con rol OPERATOR o PANEL_ADMIN. Los endpoints bajo /api/panel/**
+ * requieren este JWT. /api/admin/** sigue requiriendo rol ADMIN.
+ *
+ * Genera el token INLINE con jjwt para NO depender de JwtTokenService
+ * (que vive en app.coincidir.security — un package hermano que no escanea
+ * el @SpringBootApplication de app.coincidir.api). La clave y el formato
+ * son exactamente los mismos que usa el filtro existente, así que los
+ * tokens resultantes son 100% compatibles.
  */
 @Slf4j
 @RestController
@@ -37,7 +38,6 @@ import java.util.Map;
 public class PanelAuthController {
 
     private final PanelUserRepository repo;
-    private final PermissionsService permissionsService;
 
     private final String base64Secret;
     private final long ttlSeconds;
@@ -47,19 +47,22 @@ public class PanelAuthController {
 
     public PanelAuthController(
             PanelUserRepository repo,
-            PermissionsService permissionsService,
-            @Value("${security.jwt.secret:${jwt.secret:8k8L0p0vC9k14y3w3m1k+T1bJ3Vq1Q9WZzqQyvV6f1s8=}}") String base64Secret,
+            // Mismas properties que JwtTokenService. SIN default — el secret
+            // tiene que venir de env var (JWT_SECRET en Railway).
+            @Value("${security.jwt.secret:${jwt.secret:}}") String base64Secret,
             @Value("${security.jwt.ttl-seconds:${jwt.ttlSeconds:43200}}") long ttlSeconds
     ) {
         this.repo = repo;
-        this.permissionsService = permissionsService;
         this.base64Secret = base64Secret;
         this.ttlSeconds = ttlSeconds;
     }
 
     @PostConstruct
     void init() {
-        this.signingKey = Keys.hmacShaKeyFor(Decoders.BASE64.decode(base64Secret));
+        // El decoder tolera Base64 estándar, Base64 URL-safe (con '-' y '_')
+        // y texto plano. Esto evita errores como "Illegal base64 character: '-'"
+        // cuando el secret se generó con `openssl rand -base64 32`.
+        this.signingKey = Keys.hmacShaKeyFor(JwtSecretDecoder.decode(base64Secret));
         this.ttlMillis = ttlSeconds * 1000L;
     }
 
@@ -81,24 +84,17 @@ public class PanelAuthController {
         u.setLastLoginAt(Instant.now());
         repo.save(u);
 
-        EffectivePermissions perms = permissionsService.resolve(u);
-
-        String token = generateToken(u.getUsername(), List.of(u.getRole() == null ? "OPERATOR" : u.getRole()));
+        String token = generateToken(u.getUsername(), List.of(u.getRole()));
         Map<String, Object> out = new HashMap<>();
         out.put("token", token);
         out.put("username", u.getUsername());
         out.put("displayName", u.getDisplayName());
-        out.put("role", u.getRole());                     // legacy
-        out.put("roleCode", perms.roleCode());            // nuevo
-        out.put("roleName", perms.roleName());            // nuevo
-        out.put("fullAccess", perms.fullAccess());        // nuevo (DIOS)
-        out.put("enabledPanels", u.getEnabledPanels());   // legacy CSV
-        out.put("panelKeys", perms.panelKeys());          // nuevo: lista efectiva
-        out.put("canManageUsers", perms.canManageUsers());
-        out.put("canManageRoles", perms.canManageRoles());
+        out.put("role", u.getRole());
+        out.put("enabledPanels", u.getEnabledPanels());
         return ResponseEntity.ok(out);
     }
 
+    /** Replica exactamente la lógica de JwtTokenService.generateToken. */
     private String generateToken(String username, List<String> roles) {
         long now = System.currentTimeMillis();
         Date iat = new Date(now);
@@ -109,7 +105,6 @@ public class PanelAuthController {
             claims.put("roles", roles);
             if (!roles.isEmpty()) claims.put("role", roles.get(0));
         }
-        claims.put("userKind", "PANEL_USER");
 
         return Jwts.builder()
                 .subject(username)

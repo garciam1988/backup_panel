@@ -1,8 +1,8 @@
 package app.coincidir.security;
 
+import app.coincidir.api.security.JwtSecretDecoder;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,8 +28,9 @@ public class JwtTokenService {
     private long ttlMillis;
 
     public JwtTokenService(
-            // compat: primero security.jwt.* (application.yml), fallback a jwt.*
-            @Value("${security.jwt.secret:${jwt.secret:8k8L0p0vC9k14y3w3m1k+T1bJ3Vq1Q9WZzqQyvV6f1s8=}}") String base64Secret,
+            // compat: primero security.jwt.* (application.yml), fallback a jwt.*.
+            // SIN default — el secret tiene que venir de env var (JWT_SECRET).
+            @Value("${security.jwt.secret:${jwt.secret:}}") String base64Secret,
             @Value("${security.jwt.ttl-seconds:${jwt.ttlSeconds:43200}}") long ttlSeconds
     ) {
         this.base64Secret = base64Secret;
@@ -38,7 +39,9 @@ public class JwtTokenService {
 
     @PostConstruct
     void init() {
-        this.signingKey = Keys.hmacShaKeyFor(Decoders.BASE64.decode(base64Secret));
+        // Decoder tolerante: acepta Base64 estándar, URL-safe (con '-' / '_')
+        // y texto plano. Ver JwtSecretDecoder.
+        this.signingKey = Keys.hmacShaKeyFor(JwtSecretDecoder.decode(base64Secret));
         this.ttlMillis = ttlSeconds * 1000L;
     }
 

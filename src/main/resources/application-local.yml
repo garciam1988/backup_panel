@@ -1,3 +1,16 @@
+# ─────────────────────────────────────────────────────────────────────────
+# application-local.yml — perfil 'local' para desarrollo en máquina de Matias
+#
+# Este archivo SE VERSIONA en Git. NO debe contener secretos reales.
+# Para correr local, definí las variables sensibles en uno de:
+#   1) Tu archivo .env.local (gitignored)  — recomendado
+#   2) Variables de entorno del sistema
+#   3) Tu IDE (run config de IntelliJ / Eclipse)
+#
+# Si querés un setup cero-config para arrancar local sin ninguna API key,
+# todo funciona excepto los endpoints que invocan APIs externas (Anthropic,
+# ElevenLabs, etc.). Esos van a responder con error claro pidiendo la key.
+# ─────────────────────────────────────────────────────────────────────────
 server:
   port: 9000
 
@@ -7,9 +20,11 @@ spring:
       max-file-size: 15MB
       max-request-size: 15MB
   datasource:
-    url: jdbc:mysql://localhost:3306/arviz?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull
-    username: root
-    password: "1234"
+    # MySQL local. Default razonable para dev — la base "arviz" de Matías con
+    # root/1234. Si tu setup es distinto, override con env vars o IDE config.
+    url:      ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/arviz?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull}
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:1234}
   jpa:
     database-platform: org.hibernate.dialect.MySQLDialect
     hibernate:
@@ -19,34 +34,52 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
   mail:
-    host: ${SMTP_HOST:wo51.wiroos.host}
-    port: ${SMTP_PORT:465}
-    username: ${SMTP_USER:info@yes-traveluy.com}
-    password: ${SMTP_PASS:YesTravel26}
+    # SMTP en local: por default apunta a un servidor inexistente para que
+    # no se mande mail real desde dev. Override con tus credenciales si
+    # querés probar el envío.
+    host:     ${SMTP_HOST:localhost}
+    port:     ${SMTP_PORT:1025}
+    username: ${SMTP_USER:}
+    password: ${SMTP_PASS:}
     properties:
-      mail.smtp.auth: true
-      mail.smtp.ssl.enable: true
+      mail.smtp.auth: false
+      mail.smtp.ssl.enable: false
       mail.smtp.starttls.enable: false
-      mail.smtp.starttls.required: false
-      mail.smtp.ssl.trust: ${SMTP_HOST:wo51.wiroos.host}
 
 coincidir:
-  sales-email: sales@yes-traveluy.com
-  anthropic-key: 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
-  aerodatabox-key: ${AERODATABOX_KEY:fc175a9236msh0a91a116322637cp14d398jsn1823a5291f18}
-  mail-from: ${MAIL_FROM:YES Travel <info@yes-traveluy.com>}
-  mail-bcc: ${MAIL_BCC:info@yes-traveluy.com}
+  sales-email: ${COINCIDIR_SALES_EMAIL:sales@example.local}
+  mail-from:   ${MAIL_FROM:Coincidir Local <info@example.local>}
+  mail-bcc:    ${MAIL_BCC:}
   admin-panel-url: ${ADMIN_PANEL_URL:http://localhost:3002}
-  portal-url: ${NEXT_PUBLIC_USER_PANEL_URL:http://localhost:3001}
+  portal-url:      ${NEXT_PUBLIC_USER_PANEL_URL:http://localhost:3001}
   user-portal-url: ${NEXT_PUBLIC_USER_PANEL_URL:${coincidir.portal-url:http://localhost:3001}}
+
+  # ─── API keys ───────────────────────────────────────────────────────────
+  # Sin default. Si las necesitás para testear local, ponelas en .env.local
+  # o en la run config de tu IDE. NO las pongas acá.
+  anthropic-key:    ${ANTHROPIC_API_KEY:}
+  aerodatabox-key:  ${AERODATABOX_KEY:}
+  pexels-key:       ${PEXELS_API_KEY:}
+  elevenlabs-key:   ${ELEVENLABS_API_KEY:}
+
+  # ─── DIOS: en local, default permite arrancar sin laburo de configurar.
+  # ⚠️ Esta password es solo para tu dev local. En producción NUNCA usar.
+  dios:
+    username:     ${COINCIDIR_DIOS_USERNAME:dios}
+    password:     ${COINCIDIR_DIOS_PASSWORD:dios-local-only}
+    display-name: ${COINCIDIR_DIOS_DISPLAY_NAME:Dios (local)}
+
   backups:
     dir: dumps
     admin-code: ${COINCIDIR_BACKUPS_ADMIN_CODE:1234}
 
 security:
   jwt:
-    secret: "8k8l0p0vC9k14y3w3m1k+T1bJ3Vq1Q9WZzqQyV6f1s8="
-    ttl-seconds: 43200
+    # JWT secret de dev — solo válido en local. Generado al azar para no usar
+    # uno "predecible" pero igual sigue siendo público porque vive en Git.
+    # En producción se sobrescribe vía env var JWT_SECRET.
+    secret: ${JWT_SECRET:dev-only-secret-do-not-use-in-prod-3kf9s8mxnvbq2plr}
+    ttl-seconds: ${JWT_TTL_SECONDS:43200}
 
 logging:
   level:

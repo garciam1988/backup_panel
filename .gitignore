@@ -8,3 +8,21 @@
 /zips/apii.zip
 /api_bot.zip
 /zips/api_arviz.zip
+
+# Variables de entorno locales — NUNCA versionar
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDEs
+/.idea/
+/.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+/.env.example
+/zips/api_bot.zip
+/SECURITY.md
