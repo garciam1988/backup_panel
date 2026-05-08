@@ -64,6 +64,14 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST,"/api/coinbot/**").permitAll()
                         .requestMatchers(HttpMethod.GET,"/api/coinbot/**").permitAll()
 
+                        // ── Endpoints públicos del bot frontend (i18n, idiomas) ─
+                        // El bot es accesible por visitantes anónimos, así que estos
+                        // endpoints no requieren autenticación. GET para data + POST
+                        // para translate-custom (traducción de textos custom del bot
+                        // al idioma del cliente, sin persistir).
+                        .requestMatchers(HttpMethod.GET,  "/api/bot/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/bot/translate-custom").permitAll()
+
                         // swaggerr
                         .requestMatchers(
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html"

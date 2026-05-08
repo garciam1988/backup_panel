@@ -6,12 +6,17 @@ import lombok.Setter;
 import java.time.Instant;
 
 /**
- * PanelUser — usuarios del /panel (operadores y admins de panel).
+ * PanelUser — usuario del sistema (operadores /panel y administradores /admin).
  *
- * Separados del admin hardcoded de /admin (que vive en env variables).
- * Cada PanelUser tiene un rol que determina qué puede hacer:
- *   - OPERATOR: ve y gestiona pedidos en /panel (no entra a /admin)
- *   - PANEL_ADMIN: ídem + puede gestionar otros PanelUsers (crear/eliminar operadores)
+ * Originalmente nació para el /panel, pero a partir del soporte de roles
+ * dinámicos también es la fuente de verdad para usuarios del /admin.
+ *
+ * Modelo de roles:
+ *  - El campo legacy {@code role} (String) se sigue manteniendo por compatibilidad
+ *    con código viejo. Sus valores son típicamente: OPERATOR | PANEL_ADMIN | DIOS | ADMIN | ENCARGADO.
+ *  - El nuevo {@code roleId} apunta a {@link AppRole}, que define los permisos efectivos
+ *    en JSON. SI {@code roleId} está seteado, el legacy {@code role} se mantiene
+ *    sincronizado con el {@code code} de ese AppRole para que nada viejo se rompa.
  *
  * La password se guarda hasheada con BCrypt.
  */
@@ -36,16 +41,51 @@ public class PanelUser {
     @Column(name = "password_hash", length = 255, nullable = false)
     private String passwordHash;
 
-    /** Rol: OPERATOR | PANEL_ADMIN */
-    @Column(name = "role", length = 30, nullable = false)
+    /**
+     * Rol legacy (string). Se mantiene en sync con el {@code code} de {@link #roleId}.
+     * Valores típicos: OPERATOR, PANEL_ADMIN, DIOS, ADMIN, ENCARGADO.
+     * Mantener este campo nos evita romper código existente que filtra por string.
+     */
+    @Column(name = "role", length = 60, nullable = false)
     private String role = "OPERATOR";
 
-    /** Paneles habilitados (CSV: "orders,deliveries"). Si null/vacío, todos. */
-    @Column(name = "enabled_panels", length = 300)
+    /**
+     * FK al rol dinámico definido en {@link AppRole}. Es la fuente de verdad
+     * de permisos para los flujos nuevos. Puede ser null para usuarios viejos
+     * (en cuyo caso se aplica el campo legacy {@code role} con permisos hardcodeados).
+     */
+    @Column(name = "role_id")
+    private Long roleId;
+
+    /**
+     * Paneles de /panel habilitados (CSV: "orders,bot-table:reservas").
+     * Si null/vacío Y el rol no define {@code panelKeys}, se aplica el default del rol.
+     * Si null/vacío Y el rol no tiene panelKeys, NO ve paneles (a menos que tenga fullAccess).
+     *
+     * Nota: este campo permite override por usuario (un operador puede tener
+     * más o menos paneles que el default del rol). Para mantenerlo simple,
+     * SI este campo está seteado, gana sobre el rol.
+     */
+    @Column(name = "enabled_panels", length = 500)
     private String enabledPanels;
+
+    /**
+     * Secciones del /admin habilitadas (CSV de keys del SECTIONS_MENU).
+     * Funciona igual que {@link #enabledPanels}: si está seteado, gana sobre el rol.
+     * Si null/vacío, se aplica lo que diga el rol en {@code adminSections}.
+     */
+    @Column(name = "enabled_admin_sections", length = 1000)
+    private String enabledAdminSections;
 
     @Column(name = "active", nullable = false)
     private Boolean active = Boolean.TRUE;
+
+    /**
+     * Si es true, el usuario fue creado por el sistema y no puede ser borrado
+     * ni desactivado por la UI. Hoy solo lo usa el DIOS sembrado por env vars.
+     */
+    @Column(name = "is_system", nullable = false)
+    private Boolean isSystem = Boolean.FALSE;
 
     @Column(name = "last_login_at")
     private Instant lastLoginAt;
@@ -65,6 +105,7 @@ public class PanelUser {
         if (createdAt == null) createdAt = now;
         if (updatedAt == null) updatedAt = now;
         if (active == null) active = Boolean.TRUE;
+        if (isSystem == null) isSystem = Boolean.FALSE;
         if (role == null) role = "OPERATOR";
     }
 
