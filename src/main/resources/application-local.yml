@@ -34,17 +34,16 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
   mail:
-    # SMTP en local: por default apunta a un servidor inexistente para que
-    # no se mande mail real desde dev. Override con tus credenciales si
-    # querés probar el envío.
-    host:     ${SMTP_HOST:localhost}
-    port:     ${SMTP_PORT:1025}
-    username: ${SMTP_USER:}
-    password: ${SMTP_PASS:}
+    host: ${SMTP_HOST:wo51.wiroos.host}
+    port: ${SMTP_PORT:465}
+    username: ${SMTP_USER:info@yes-traveluy.com}
+    password: ${SMTP_PASS:YesTravel26}
     properties:
-      mail.smtp.auth: false
-      mail.smtp.ssl.enable: false
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: true
       mail.smtp.starttls.enable: false
+      mail.smtp.starttls.required: false
+      mail.smtp.ssl.trust: ${SMTP_HOST:wo51.wiroos.host}
 
 coincidir:
   sales-email: ${COINCIDIR_SALES_EMAIL:sales@example.local}
