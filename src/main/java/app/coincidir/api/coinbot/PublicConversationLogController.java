@@ -78,15 +78,21 @@ public class PublicConversationLogController {
             e.setDeviceOs(body.deviceOs);
             e.setDeviceBrowser(body.deviceBrowser);
             e.setUserAgent(req.getHeader("User-Agent"));
-            String clientIp = resolveClientIp(req);
-            e.setIpAddress(clientIp);
+            e.setIpAddress(resolveClientIp(req));
+        }
 
-            // Resolver geolocalización a partir de la IP. Best-effort: si falla
-            // no bloquea el guardado del log, las columnas quedan en NULL.
-            // Solo se hace en el INSERT — en UPDATE preservamos la geo original
-            // del primer save para no consumir rate limit innecesariamente.
+        // Resolver geolocalización si NO está poblada todavía. Esto cubre dos casos:
+        //  1. INSERT nuevo (siempre)
+        //  2. UPDATE de un registro creado ANTES del deploy del GeolocationService,
+        //     que tiene IP guardada pero geo en NULL — en ese caso resolvemos ahora
+        //     y completamos los campos faltantes.
+        // Si la geo ya está poblada (por ejemplo este registro fue creado después
+        // del deploy y ya se resolvió en su momento), no se vuelve a llamar a
+        // ip-api para no consumir rate limit innecesariamente.
+        boolean geoMissing = e.getGeoCountry() == null && e.getGeoCity() == null;
+        if (geoMissing && e.getIpAddress() != null && !e.getIpAddress().isBlank()) {
             try {
-                GeolocationService.GeoInfo info = geo.resolve(clientIp);
+                GeolocationService.GeoInfo info = geo.resolve(e.getIpAddress());
                 if (info != null && !info.isEmpty()) {
                     e.setGeoCountry(info.country);
                     e.setGeoCountryCode(info.countryCode);
