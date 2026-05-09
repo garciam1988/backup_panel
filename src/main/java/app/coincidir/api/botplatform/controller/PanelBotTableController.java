@@ -232,7 +232,15 @@ public class PanelBotTableController {
         BotTableRecord rec = opt.get();
         BotTable t = tableRepo.findById(rec.getTableId()).orElse(null);
         if (t != null) {
-            try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "deleted")); } catch (Exception ignored) {}
+            // Disparamos "cancelled" (no "deleted") por consistencia con las otras
+            // rutas de borrado: BotTableService.deleteRecord() (cuando el bot
+            // ejecuta delete_record) y BotTableAdminController (cuando el admin
+            // borra desde /admin > tablas) ambas usan "cancelled".
+            // Si acá usáramos "deleted", el EmailTemplate configurado bajo
+            // event="cancelled" en /admin > config emails > "Al cancelar" no
+            // matchearía y el mail al cliente NO saldría cuando un operador
+            // borra desde el panel.
+            try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "cancelled")); } catch (Exception ignored) {}
         }
         recordRepo.deleteById(recordId);
     }
