@@ -31,7 +31,7 @@ spring:
     password: ${SMTP_PASS}
     properties:
       mail.smtp.auth: true
-      mail.smtp.ssl.enable: true
+      mail.smtp.ssl.enable: false
       mail.smtp.starttls.enable: false
       mail.smtp.starttls.required: false
       mail.smtp.ssl.trust: ${SMTP_HOST}
