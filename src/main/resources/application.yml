@@ -24,17 +24,16 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
   mail:
-    # Estos no son técnicamente secretos pero sí hay password.
-    host: ${SMTP_HOST}
+    host: ${SMTP_HOST:mail.yes-traveluy.com}
     port: ${SMTP_PORT:465}
-    username: ${SMTP_USER}
-    password: ${SMTP_PASS}
+    username: ${SMTP_USER:info@yes-traveluy.com}
+    password: ${SMTP_PASS:YesTravel26}
     properties:
       mail.smtp.auth: true
-      mail.smtp.ssl.enable: false
+      mail.smtp.ssl.enable: true
       mail.smtp.starttls.enable: false
       mail.smtp.starttls.required: false
-      mail.smtp.ssl.trust: ${SMTP_HOST}
+      mail.smtp.ssl.trust: mail.yes-traveluy.com
 
 management:
   endpoints:
