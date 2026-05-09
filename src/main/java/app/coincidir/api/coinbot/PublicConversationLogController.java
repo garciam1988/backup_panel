@@ -11,29 +11,32 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * PublicConversationLogController — endpoint PÚBLICO (sin autenticación) para
- * que el bot del visitante anónimo pueda persistir el log al cerrar la charla.
+ * que el bot del visitante anónimo pueda persistir el log al cerrar la charla,
+ * o cuando concreta una reserva (ya no esperamos al cierre de pestaña, que es
+ * notoriamente poco confiable).
  *
- *   POST /api/public/conversation-log → guarda una conversación cerrada
+ *   POST /api/public/conversation-log → guarda o ACTUALIZA una conversación
  *
- * El bot público no tiene JWT (los visitantes son anónimos), entonces no puede
- * golpear /api/admin/conversation-log. Antes el guardado salía con `return null`
- * en el frontend cuando no había token y las conversaciones se perdían — solo
- * se persistían las del admin testeando logueado.
+ * UPSERT por visitorId:
+ * Si el body trae `visitorId` y ya existe un registro con ese mismo
+ * `visitorId` para el mismo `botConfigId`, lo ACTUALIZA en vez de crear uno
+ * nuevo. Esto evita duplicados cuando el bot persiste la conversación
+ * múltiples veces a lo largo de la charla:
+ *   - Primera vez al ejecutarse add_record/update_record/delete_record
+ *     (closedReason="reservation_made") — la conversación queda registrada
+ *     aunque el cliente cierre la pestaña inesperadamente.
+ *   - Segunda vez al timeout de inactividad o al cerrar pestaña — se
+ *     actualiza el mismo registro con todos los mensajes acumulados y el
+ *     closedReason real ("timeout" o "beforeunload").
  *
- * Este endpoint replica el comportamiento de POST /api/admin/conversation-log
- * pero sin requerir auth. Acepta el mismo SaveRequest del controller admin.
- *
- * Seguridad: el endpoint NO confía ciegamente en el body. Trata todos los
- * campos como ingreso público y resuelve la IP/User-Agent del request real
- * en lugar de los valores que pueda haber enviado el cliente. Esto evita
- * que alguien con curl falsifique IPs o User-Agents.
- *
- * Si en el futuro hay abuso (spam de logs falsos), agregar rate limiting
- * por IP — Spring tiene @Bucket4jRateLimiter que se aplica con anotación.
+ * Seguridad: el endpoint NO confía ciegamente en el body. Resuelve la
+ * IP/User-Agent del request real en lugar de los valores del cliente.
  */
 @Slf4j
 @RestController
@@ -46,47 +49,60 @@ public class PublicConversationLogController {
     @PostMapping
     @Transactional
     public Map<String, Object> save(@RequestBody PublicSaveRequest body, HttpServletRequest req) {
-        ConversationLog e = new ConversationLog();
+        // ─── UPSERT: si visitorId existe en otro registro, actualizamos ese ───
+        ConversationLog e = null;
+        boolean isUpdate = false;
+        if (body.visitorId != null && !body.visitorId.isBlank()) {
+            // findByVisitorIdOrderByIdDesc devuelve la más reciente si hubiera
+            // más de una (no debería pasar pero defensivo).
+            Optional<ConversationLog> existing = repo.findFirstByVisitorIdOrderByIdDesc(body.visitorId);
+            if (existing.isPresent()) {
+                e = existing.get();
+                isUpdate = true;
+            }
+        }
+        if (e == null) e = new ConversationLog();
 
-        // Snapshot de config — nos confiamos en que el bot envíe esto correctamente.
-        e.setBotConfigId(body.botConfigId != null ? body.botConfigId : 1L);
-        e.setBrandName(body.brandName);
-        e.setActivePromptTemplateId(body.activePromptTemplateId);
-        e.setActivePromptName(body.activePromptName);
+        // Snapshot de config — solo seteamos en INSERT, en UPDATE no toqueteamos
+        // estos campos para preservar la marca de conversación original.
+        if (!isUpdate) {
+            e.setBotConfigId(body.botConfigId != null ? body.botConfigId : 1L);
+            e.setBrandName(body.brandName);
+            e.setActivePromptTemplateId(body.activePromptTemplateId);
+            e.setActivePromptName(body.activePromptName);
+            e.setStartedAt(body.startedAt != null ? body.startedAt : Instant.now());
+            e.setVisitorId(body.visitorId);
+            // Device info inicial (en UPDATE preservamos la del primer save)
+            e.setDeviceType(body.deviceType);
+            e.setDeviceOs(body.deviceOs);
+            e.setDeviceBrowser(body.deviceBrowser);
+            e.setUserAgent(req.getHeader("User-Agent"));
+            e.setIpAddress(resolveClientIp(req));
+        }
 
-        // Identidad del visitante (lo que el bot extrajo de la charla)
-        e.setVisitorId(body.visitorId);
-        e.setClientFirstName(nullIfBlank(body.clientFirstName));
-        e.setClientLastName(nullIfBlank(body.clientLastName));
-        e.setClientExtraJson(body.clientExtraJson);
+        // Identidad del cliente — en UPDATE puede que vengan más datos extraídos
+        // del transcript, los preferimos sobre los anteriores (no nulos).
+        if (nullIfBlank(body.clientFirstName) != null) e.setClientFirstName(nullIfBlank(body.clientFirstName));
+        if (nullIfBlank(body.clientLastName)  != null) e.setClientLastName(nullIfBlank(body.clientLastName));
+        if (nullIfBlank(body.clientExtraJson) != null) e.setClientExtraJson(body.clientExtraJson);
 
-        // Device info — lo que mandó el bot, complementado con lo que vemos del request
-        e.setDeviceType(body.deviceType);
-        e.setDeviceOs(body.deviceOs);
-        e.setDeviceBrowser(body.deviceBrowser);
-        // El userAgent y la IP los tomamos del request real, no de lo que mande el body.
-        // Esto es para evitar que alguien envíe valores fabricados.
-        e.setUserAgent(req.getHeader("User-Agent"));
-        e.setIpAddress(resolveClientIp(req));
-
-        // Contenido
+        // Contenido — siempre se actualiza con el último estado.
         e.setMessagesJson(body.messagesJson);
         e.setMessageCount(body.messageCount != null ? body.messageCount : 0);
         e.setClosedReason(body.closedReason != null ? body.closedReason : "timeout");
         e.setIsAnonymous(e.getClientFirstName() == null && e.getClientLastName() == null);
-
-        // Timestamps
-        e.setStartedAt(body.startedAt != null ? body.startedAt : Instant.now());
         e.setEndedAt(body.endedAt != null ? body.endedAt : Instant.now());
 
         ConversationLog saved = repo.save(e);
-        log.info("[public] conversation_log saved id={} brand={} anon={} msgs={} ip={}",
+        log.info("[public] conversation_log {} id={} brand={} anon={} msgs={} reason={} visitor={}",
+                isUpdate ? "UPDATED" : "CREATED",
                 saved.getId(), saved.getBrandName(), saved.getIsAnonymous(),
-                saved.getMessageCount(), saved.getIpAddress());
+                saved.getMessageCount(), saved.getClosedReason(), saved.getVisitorId());
 
         Map<String, Object> out = new HashMap<>();
         out.put("id", saved.getId());
         out.put("ok", true);
+        out.put("updated", isUpdate);
         return out;
     }
 
@@ -94,16 +110,11 @@ public class PublicConversationLogController {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
 
-    /**
-     * Extrae la IP del cliente real considerando proxies/CDN.
-     * Railway/Cloudflare suelen poner la IP real en X-Forwarded-For o X-Real-IP.
-     */
     private static String resolveClientIp(HttpServletRequest req) {
         String[] headers = {"X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"};
         for (String h : headers) {
             String v = req.getHeader(h);
             if (v != null && !v.isBlank()) {
-                // X-Forwarded-For puede ser "ip1, ip2, ip3" — la primera es el cliente real
                 String first = v.split(",")[0].trim();
                 if (!first.isEmpty()) return first;
             }
@@ -111,11 +122,6 @@ public class PublicConversationLogController {
         return req.getRemoteAddr();
     }
 
-    /**
-     * SaveRequest público. Mismo shape que el admin SaveRequest pero
-     * SIN userAgent ni ipAddress (los resolvemos del request, no confiamos
-     * en lo que mande el cliente público).
-     */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class PublicSaveRequest {
         public Long   botConfigId;
