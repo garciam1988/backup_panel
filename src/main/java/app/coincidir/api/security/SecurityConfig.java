@@ -72,6 +72,13 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET,  "/api/bot/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/bot/translate-custom").permitAll()
 
+                        // ── Endpoints /api/public/** ──
+                        // Lecturas que el bot público necesita: bot-config, prompt
+                        // templates activos, data sources prompt-context, menu-images,
+                        // bot-table-tools/prompt-context, etc. NO escriben nada y
+                        // exponen DTOs acotados (sin metadata sensible).
+                        .requestMatchers(HttpMethod.GET,  "/api/public/**").permitAll()
+
                         // swaggerr
                         .requestMatchers(
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html"
