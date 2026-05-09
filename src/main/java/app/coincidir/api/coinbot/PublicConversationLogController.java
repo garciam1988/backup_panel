@@ -45,6 +45,7 @@ import java.util.Optional;
 public class PublicConversationLogController {
 
     private final ConversationLogRepository repo;
+    private final GeolocationService geo;
 
     @PostMapping
     @Transactional
@@ -77,7 +78,24 @@ public class PublicConversationLogController {
             e.setDeviceOs(body.deviceOs);
             e.setDeviceBrowser(body.deviceBrowser);
             e.setUserAgent(req.getHeader("User-Agent"));
-            e.setIpAddress(resolveClientIp(req));
+            String clientIp = resolveClientIp(req);
+            e.setIpAddress(clientIp);
+
+            // Resolver geolocalización a partir de la IP. Best-effort: si falla
+            // no bloquea el guardado del log, las columnas quedan en NULL.
+            // Solo se hace en el INSERT — en UPDATE preservamos la geo original
+            // del primer save para no consumir rate limit innecesariamente.
+            try {
+                GeolocationService.GeoInfo info = geo.resolve(clientIp);
+                if (info != null && !info.isEmpty()) {
+                    e.setGeoCountry(info.country);
+                    e.setGeoCountryCode(info.countryCode);
+                    e.setGeoRegion(info.region);
+                    e.setGeoCity(info.city);
+                }
+            } catch (Exception ex) {
+                log.debug("[public] geo resolve failed (no bloquea): {}", ex.getMessage());
+            }
         }
 
         // Identidad del cliente — en UPDATE puede que vengan más datos extraídos

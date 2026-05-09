@@ -100,7 +100,8 @@ public class ClientesAdminController {
             // Header
             String[] headers = {
                 "Nombre", "Apellido", "Email", "Teléfono",
-                "# Reservas", "Dispositivo", "Sistema",
+                "# Reservas", "Dispositivo", "Detalle", "Sistema", "Navegador",
+                "País", "Provincia", "Ciudad",
                 "Primer contacto", "Último contacto"
             };
             Row header = sheet.createRow(0);
@@ -123,9 +124,14 @@ public class ClientesAdminController {
                 row.createCell(3).setCellValue(safe(c.telefono));
                 row.createCell(4).setCellValue(c.reservasCount);
                 row.createCell(5).setCellValue(safe(c.dispositivoPrincipal));
-                row.createCell(6).setCellValue(safe(c.sistemaOperativo));
-                row.createCell(7).setCellValue(formatInstant(c.firstSeenAt, fmt));
-                row.createCell(8).setCellValue(formatInstant(c.lastSeenAt, fmt));
+                row.createCell(6).setCellValue(safe(c.dispositivoDetalle));
+                row.createCell(7).setCellValue(safe(c.sistemaOperativo));
+                row.createCell(8).setCellValue(safe(c.navegador));
+                row.createCell(9).setCellValue(safe(c.geoPais));
+                row.createCell(10).setCellValue(safe(c.geoProvincia));
+                row.createCell(11).setCellValue(safe(c.geoCiudad));
+                row.createCell(12).setCellValue(formatInstant(c.firstSeenAt, fmt));
+                row.createCell(13).setCellValue(formatInstant(c.lastSeenAt, fmt));
             }
 
             // Resumen al final

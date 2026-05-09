@@ -76,6 +76,22 @@ public class ConversationLog {
     @Column(name = "ip_address", length = 45)
     private String ipAddress;
 
+    // ─── Geolocalización resuelta de la IP ────────────────────────
+    // Llenadas por GeolocationService al guardar el log. Si la resolución
+    // falla, quedan null. El frontend del módulo Clientes las usa para
+    // mostrar país/provincia/ciudad.
+    @Column(name = "geo_country", length = 80)
+    private String geoCountry;
+
+    @Column(name = "geo_country_code", length = 2)
+    private String geoCountryCode;
+
+    @Column(name = "geo_region", length = 100)
+    private String geoRegion;
+
+    @Column(name = "geo_city", length = 100)
+    private String geoCity;
+
     // ── Contenido ──────────────────────────────────────────────────────────
     /** JSON array: [{ "role": "user"|"assistant", "content": "...", "ts": "...ISO..." }, ...] */
     @Column(name = "messages_json", columnDefinition = "LONGTEXT")

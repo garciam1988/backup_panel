@@ -349,6 +349,31 @@ public class ClientesService {
                 .map(Map.Entry::getKey)
                 .orElse(null);
 
+        // Navegador y device detail más recientes (de la última conversación)
+        ConversationLog mostRecentConv = convs.stream()
+                .max(Comparator.comparing(c -> c.getStartedAt() != null ? c.getStartedAt() : Instant.EPOCH))
+                .orElse(null);
+        if (mostRecentConv != null) {
+            // Browser puede venir en deviceBrowser ya parseado por el front,
+            // o lo extraemos del userAgent como fallback.
+            dto.navegador = mostRecentConv.getDeviceBrowser();
+            if (dto.navegador == null || dto.navegador.isBlank()) {
+                dto.navegador = parseBrowserFromUA(mostRecentConv.getUserAgent());
+            }
+            // Device detail: heurística sobre el UA (modelo de mobile o versión OS)
+            dto.dispositivoDetalle = parseDeviceDetailFromUA(mostRecentConv.getUserAgent());
+
+            // Geo: del registro más reciente que la tenga (algunas viejas pueden no tener)
+            ConversationLog convWithGeo = convs.stream()
+                    .filter(c -> c.getGeoCountry() != null || c.getGeoCity() != null)
+                    .max(Comparator.comparing(c -> c.getStartedAt() != null ? c.getStartedAt() : Instant.EPOCH))
+                    .orElse(mostRecentConv);
+            dto.geoPais        = convWithGeo.getGeoCountry();
+            dto.geoPaisCodigo  = convWithGeo.getGeoCountryCode();
+            dto.geoProvincia   = convWithGeo.getGeoRegion();
+            dto.geoCiudad      = convWithGeo.getGeoCity();
+        }
+
         // Mensajes promedio por charla
         if (!convs.isEmpty()) {
             double avg = convs.stream()
@@ -448,6 +473,101 @@ public class ClientesService {
         } catch (Exception e) { return null; }
     }
 
+    /**
+     * Parsea un User-Agent string para extraer el navegador con versión.
+     * Heurística simple — para algo más serio usar yauaa o ua-parser, pero
+     * para el módulo Clientes alcanza con esto.
+     *
+     * Ejemplos:
+     *   "Mozilla/5.0 ... Chrome/120.0.0.0 Safari/537.36" → "Chrome 120"
+     *   "Mozilla/5.0 ... Firefox/121.0"                  → "Firefox 121"
+     *   "Mozilla/5.0 ... Version/17.2 Safari/605.1.15"   → "Safari 17"
+     */
+    private String parseBrowserFromUA(String ua) {
+        if (ua == null || ua.isBlank()) return null;
+
+        // Edge antes que Chrome (Edge incluye "Chrome" en su UA)
+        java.util.regex.Matcher m;
+        m = java.util.regex.Pattern.compile("Edg/(\\d+)").matcher(ua);
+        if (m.find()) return "Edge " + m.group(1);
+
+        m = java.util.regex.Pattern.compile("OPR/(\\d+)|Opera/(\\d+)").matcher(ua);
+        if (m.find()) return "Opera " + (m.group(1) != null ? m.group(1) : m.group(2));
+
+        m = java.util.regex.Pattern.compile("Firefox/(\\d+)").matcher(ua);
+        if (m.find()) return "Firefox " + m.group(1);
+
+        m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(ua);
+        if (m.find()) return "Chrome " + m.group(1);
+
+        // Safari (no Chrome, no Edge): mirar Version/X
+        if (ua.contains("Safari/") && !ua.contains("Chrome/")) {
+            m = java.util.regex.Pattern.compile("Version/(\\d+)").matcher(ua);
+            if (m.find()) return "Safari " + m.group(1);
+            return "Safari";
+        }
+        return null;
+    }
+
+    /**
+     * Heurística para extraer un detalle más rico del dispositivo desde el UA.
+     * Devuelve cosas como "iPhone 15 Pro", "Galaxy S24", "Windows 11", "macOS 14".
+     * Si no puede determinar, devuelve null.
+     */
+    private String parseDeviceDetailFromUA(String ua) {
+        if (ua == null || ua.isBlank()) return null;
+
+        java.util.regex.Matcher m;
+
+        // iPhone con modelo (raramente expone el modelo exacto, suele decir solo "iPhone")
+        if (ua.contains("iPhone")) {
+            m = java.util.regex.Pattern.compile("CPU iPhone OS (\\d+)_(\\d+)").matcher(ua);
+            if (m.find()) return "iPhone (iOS " + m.group(1) + "." + m.group(2) + ")";
+            return "iPhone";
+        }
+        if (ua.contains("iPad")) {
+            m = java.util.regex.Pattern.compile("CPU OS (\\d+)_(\\d+)").matcher(ua);
+            if (m.find()) return "iPad (iOS " + m.group(1) + "." + m.group(2) + ")";
+            return "iPad";
+        }
+
+        // Android: el modelo suele aparecer entre paréntesis después de "Linux; Android X;"
+        m = java.util.regex.Pattern.compile("Android (\\d+)[^;]*; ([^)]+?)(?: Build|\\))").matcher(ua);
+        if (m.find()) {
+            String version = m.group(1);
+            String model = m.group(2).trim();
+            // Limpieza: el modelo a veces tiene "wv" (webview) o cosas raras
+            model = model.replaceAll("\\bwv\\b", "").replaceAll("\\s+", " ").trim();
+            if (model.isEmpty() || model.equalsIgnoreCase("K") || model.length() < 2) {
+                return "Android " + version;
+            }
+            return model + " (Android " + version + ")";
+        }
+        if (ua.contains("Android")) {
+            m = java.util.regex.Pattern.compile("Android (\\d+)").matcher(ua);
+            if (m.find()) return "Android " + m.group(1);
+            return "Android";
+        }
+
+        // Windows: "Windows NT 10.0" → Windows 10/11 (no se puede distinguir desde UA)
+        if (ua.contains("Windows NT 10.0")) return "Windows 10/11";
+        if (ua.contains("Windows NT 6.3")) return "Windows 8.1";
+        if (ua.contains("Windows NT 6.2")) return "Windows 8";
+        if (ua.contains("Windows NT 6.1")) return "Windows 7";
+
+        // macOS: "Mac OS X 14_2_1" → macOS 14
+        m = java.util.regex.Pattern.compile("Mac OS X (\\d+)[._](\\d+)").matcher(ua);
+        if (m.find()) {
+            int major = Integer.parseInt(m.group(1));
+            // macOS pasó de 10.x a 11+ (Big Sur)
+            if (major >= 11) return "macOS " + major;
+            return "macOS 10." + m.group(2);
+        }
+
+        if (ua.contains("Linux")) return "Linux";
+        return null;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // DTOs (públicos para el controller)
     // ─────────────────────────────────────────────────────────────────────
@@ -464,6 +584,12 @@ public class ClientesService {
         public Instant lastSeenAt;
         public String dispositivoPrincipal;   // mobile / desktop / tablet
         public String sistemaOperativo;       // Windows / Android / iOS / etc.
+        public String navegador;              // Chrome / Safari / Firefox / Edge — extraído del UA
+        public String dispositivoDetalle;     // "Windows 11", "iPhone 15", "Galaxy S24" — heurístico
+        public String geoPais;                // "Argentina"
+        public String geoPaisCodigo;          // "AR" — para mostrar bandera
+        public String geoProvincia;           // "Buenos Aires"
+        public String geoCiudad;              // "Pilar"
         public Integer mensajesPromedio;      // por conversación
         public Integer duracionPromedioMin;   // por conversación
     }
