@@ -67,7 +67,7 @@ coincidir:
   # ('dios') porque no es sensible — la password obviamente no.
   dios:
     username:     ${COINCIDIR_DIOS_USERNAME:dios}
-    password:     ${COINCIDIR_DIOS_PASSWORD:}
+    password:     ${COINCIDIR_DIOS_PASSWORD:1234}
     display-name: ${COINCIDIR_DIOS_DISPLAY_NAME:Dios}
 
   backups:
