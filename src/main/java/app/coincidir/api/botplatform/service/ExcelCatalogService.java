@@ -169,17 +169,34 @@ public class ExcelCatalogService {
                     Row row = sheet.getRow(r);
                     if (row == null || !hasAnyCellWithValue(row, fmt)) continue;
 
+                    // Importante: iteramos en orden de headers y SIEMPRE incluimos
+                    // cada columna (aunque la celda esté vacía guardamos "").
+                    // Antes se hacía "if (value != null) put(...)" lo que provocaba
+                    // dos problemas:
+                    //   1. Cada fila tenía un set distinto de keys según qué celdas
+                    //      estaban llenas → el frontend perdía columnas en el
+                    //      preview cuando la 1ra fila no tenía ese campo.
+                    //   2. El orden de columnas terminaba dependiendo de la 1ra
+                    //      fila con datos completos, no del orden real del Excel.
+                    // Con este fix, todas las filas tienen las mismas keys, en el
+                    // mismo orden que los headers del Excel.
                     Map<String, Object> rowData = new LinkedHashMap<>();
+                    boolean hasAnyRealValue = false;
                     for (int c = 0; c < headers.size(); c++) {
                         String header = headers.get(c);
                         if (header.isBlank()) continue; // ignorar columnas sin header
 
                         Cell cell = row.getCell(c);
                         Object value = extractCellValue(cell, fmt);
-                        if (value != null) rowData.put(header, value);
+                        if (value != null) {
+                            rowData.put(header, value);
+                            hasAnyRealValue = true;
+                        } else {
+                            rowData.put(header, "");
+                        }
                     }
 
-                    if (rowData.isEmpty()) continue;
+                    if (!hasAnyRealValue) continue;
 
                     ExcelCatalogRow erow = new ExcelCatalogRow();
                     erow.setCatalogId(catalog.getId());
