@@ -5,6 +5,8 @@ import app.coincidir.api.botplatform.domain.ExcelCatalogRow;
 import app.coincidir.api.botplatform.repository.ExcelCatalogRepository;
 import app.coincidir.api.botplatform.repository.ExcelCatalogRowRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
@@ -47,6 +49,16 @@ public class ExcelCatalogService {
     private final ObjectMapper jsonMapper = new ObjectMapper();
 
     /**
+     * EntityManager para forzar flush explícito entre DELETE y INSERT.
+     * Sin esto, JPA puede reordenar las operaciones y ejecutar el DELETE
+     * después de los INSERT, borrando las filas recién insertadas
+     * (causa: las filas viejas no se borran y las nuevas se pierden,
+     * dejando el catálogo con datos inconsistentes o vacío).
+     */
+    @PersistenceContext
+    private EntityManager em;
+
+    /**
      * Carga (o reemplaza) un catálogo a partir de un archivo Excel.
      *
      * @param name        nombre lógico del catálogo (ej: "productos")
@@ -60,21 +72,53 @@ public class ExcelCatalogService {
         if (file == null || file.isEmpty()) throw new IllegalArgumentException("El archivo está vacío");
         if (name == null || name.isBlank()) throw new IllegalArgumentException("El nombre del catálogo es obligatorio");
 
-        // Upsert por name: si ya existe, reemplazamos filas; si no, creamos
-        ExcelCatalog catalog = catalogRepo.findByName(name.trim()).orElseGet(ExcelCatalog::new);
-        catalog.setName(name.trim());
+        String cleanName = name.trim();
+
+        // ─────────────────────────────────────────────────────────────────
+        // FIX (catálogos): garantizar que el upload arranque SIEMPRE limpio.
+        //
+        // Problema histórico:
+        //   - JPA mezcla un DELETE (@Modifying) con saveAll() de filas nuevas
+        //     en la misma transacción; sin flush explícito el orden de
+        //     ejecución no está garantizado y a veces los INSERT se hacen
+        //     primero, luego corre el DELETE y borra las filas recién
+        //     insertadas (queda el catálogo con 0 filas o con basura).
+        //   - Además, si un upload previo del mismo nombre falló a medio
+        //     camino, podían quedar filas huérfanas referenciando un
+        //     catalog_id "fantasma".
+        //
+        // Solución:
+        //   1. Si ya existe un catálogo con ese name → borrar sus filas y
+        //      flushear ANTES de cualquier insert.
+        //   2. Si NO existe → guardar primero el nuevo catálogo (para tener
+        //      id real) y flushear, así los inserts van con un id válido y
+        //      no se mezclan con un DELETE pendiente.
+        //   3. Recién después parsear y guardar las filas nuevas.
+        // ─────────────────────────────────────────────────────────────────
+
+        Optional<ExcelCatalog> existing = catalogRepo.findByName(cleanName);
+        ExcelCatalog catalog = existing.orElseGet(ExcelCatalog::new);
+        catalog.setName(cleanName);
         if (description != null) catalog.setDescription(description);
         catalog.setOriginalFilename(file.getOriginalFilename());
         catalog.setSizeBytes(file.getSize());
         catalog.setUploadedBy(uploadedBy);
         catalog.setActive(true);
 
-        // Si ya tenía filas, borrarlas primero
-        if (catalog.getId() != null) {
+        if (existing.isPresent() && catalog.getId() != null) {
+            // Upsert: borrar filas viejas y flushear inmediatamente para
+            // que el DELETE se ejecute ANTES de los INSERT siguientes.
+            long oldCount = rowRepo.countByCatalogId(catalog.getId());
             rowRepo.deleteByCatalogId(catalog.getId());
+            em.flush();
+            log.info("excel_catalog upsert: name={}, filas viejas borradas={}", cleanName, oldCount);
         }
 
+        // Guardar metadata del catálogo (asigna id si era nuevo) y flushear
+        // para garantizar que el id esté disponible y persistido antes de
+        // insertar las filas hijas.
         catalog = catalogRepo.save(catalog);
+        em.flush();
 
         // Parsear
         List<String> sheetNames = new ArrayList<>();
@@ -151,8 +195,12 @@ public class ExcelCatalogService {
             }
         }
 
-        // Guardar filas en batch
-        rowRepo.saveAll(allRows);
+        // Guardar filas en batch y flushear para que queden persistidas
+        // antes de actualizar la metadata final (orden estable).
+        if (!allRows.isEmpty()) {
+            rowRepo.saveAll(allRows);
+            em.flush();
+        }
 
         // Actualizar metadata
         catalog.setSheetsJson(jsonMapper.writeValueAsString(sheetNames));
@@ -177,7 +225,11 @@ public class ExcelCatalogService {
 
     @Transactional
     public void deleteCatalog(Long catalogId) {
+        // Borrar filas hijas primero, flushear para que el DELETE se ejecute
+        // ANTES del delete del catálogo padre. Sin flush, JPA puede reordenar
+        // y dejar filas huérfanas en excel_catalog_row.
         rowRepo.deleteByCatalogId(catalogId);
+        em.flush();
         catalogRepo.deleteById(catalogId);
     }
 
