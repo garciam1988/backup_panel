@@ -56,6 +56,21 @@ public class BotConfig {
     @Column(name = "welcome_message", columnDefinition = "TEXT")
     private String welcomeMessage;
 
+    // ── Contacto del local ────────────────────────────────────
+    // Datos de contacto alternativo del cliente. Se muestran en la pantalla
+    // de mantenimiento del bot (cuando el backend está caído) para que el
+    // visitante pueda contactar al local por otra vía. También están
+    // disponibles para que el bot los use en su prompt.
+    // Todos opcionales — si están vacíos, no se muestra esa sección.
+    @Column(name = "contact_whatsapp", length = 40)
+    private String contactWhatsapp;
+
+    @Column(name = "contact_phone", length = 40)
+    private String contactPhone;
+
+    @Column(name = "contact_address", length = 255)
+    private String contactAddress;
+
     // ── Audio ─────────────────────────────────────────────────
     @Column(name = "allow_tts", nullable = false)
     private Boolean allowTts = true;

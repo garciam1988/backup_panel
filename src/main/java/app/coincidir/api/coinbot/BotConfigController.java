@@ -64,6 +64,9 @@ public class BotConfigController {
         if (dto.headerSubtitle != null)    entity.setHeaderSubtitle(dto.headerSubtitle);
         if (dto.themeJson != null)         entity.setThemeJson(dto.themeJson);
         if (dto.welcomeMessage != null)    entity.setWelcomeMessage(dto.welcomeMessage);
+        if (dto.contactWhatsapp != null)   entity.setContactWhatsapp(blankToNull(dto.contactWhatsapp));
+        if (dto.contactPhone != null)      entity.setContactPhone(blankToNull(dto.contactPhone));
+        if (dto.contactAddress != null)    entity.setContactAddress(blankToNull(dto.contactAddress));
 
         if (dto.allowTts != null)          entity.setAllowTts(dto.allowTts);
         if (dto.allowUserAudio != null)    entity.setAllowUserAudio(dto.allowUserAudio);
@@ -259,6 +262,9 @@ public class BotConfigController {
         public String headerSubtitle;
         public String themeJson;
         public String welcomeMessage;
+        public String contactWhatsapp;
+        public String contactPhone;
+        public String contactAddress;
 
         public Boolean allowTts;
         public Boolean allowUserAudio;
@@ -324,6 +330,9 @@ public class BotConfigController {
             d.headerSubtitle         = e.getHeaderSubtitle();
             d.themeJson              = e.getThemeJson();
             d.welcomeMessage         = e.getWelcomeMessage();
+            d.contactWhatsapp        = e.getContactWhatsapp();
+            d.contactPhone           = e.getContactPhone();
+            d.contactAddress         = e.getContactAddress();
             d.allowTts               = e.getAllowTts();
             d.allowUserAudio         = e.getAllowUserAudio();
             d.useCustomVoice         = e.getUseCustomVoice();
@@ -366,5 +375,15 @@ public class BotConfigController {
             d.updatedBy              = e.getUpdatedBy();
             return d;
         }
+    }
+
+    /** Devuelve null si el string es nulo, vacío o solo whitespace. Si tiene
+     *  contenido, lo trimea. Útil para campos opcionales tipo contactPhone,
+     *  donde un "" del frontend debe persistirse como NULL en BD.
+     */
+    private static String blankToNull(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
     }
 }
