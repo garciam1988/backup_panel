@@ -133,6 +133,31 @@ public class BotConnectorController {
         }
         BotConnector tmp = new BotConnector();
         dto.applyTo(tmp);
+
+        // ────────────────────────────────────────────────────────────────────
+        // FIX: cuando se prueba un conector que YA EXISTE (form de edición),
+        // la UI no manda la password (queda enmascarada y el usuario no la
+        // re-tipea). El DTO llega con password=null y el BotConnector temporal
+        // queda intentando conectarse sin password.
+        //
+        // Síntoma observado: en MySQL, intentar conectarse sin password contra
+        // un server que sí la requiere produce un timeout (el server corta el
+        // handshake en silencio) — el usuario veía "timeout 30s" cuando en
+        // realidad el problema era credenciales vacías.
+        //
+        // Solución: si el DTO trae id y la password está vacía/null, traemos
+        // la password real desde la BD y la usamos en el test. Resto de
+        // campos (host, port, user, etc.) se respetan del DTO porque el
+        // usuario puede estar probando cambios sin haber guardado.
+        // ────────────────────────────────────────────────────────────────────
+        if (dto.id != null && (tmp.getPassword() == null || tmp.getPassword().isBlank())) {
+            repo.findById(dto.id).ifPresent(saved -> {
+                if (saved.getPassword() != null && !saved.getPassword().isBlank()) {
+                    tmp.setPassword(saved.getPassword());
+                }
+            });
+        }
+
         String err = dataSourceService.testConnection(tmp);
         if (err == null) {
             body.put("ok", true);
@@ -160,6 +185,19 @@ public class BotConnectorController {
         public String   password;     // en respuestas de listado, vuelve null (ver fromEntity)
         public String   extraParams;
         public Boolean  active;
+        // Fase 2 — SQL libre opt-in por conector.
+        public Boolean  sqlExecEnabled;
+        public Integer  sqlExecMaxRows;
+        public Integer  sqlExecTimeoutSec;
+        public Integer  sqlExecMaxBytes;
+        /** CSV de tablas permitidas en minúsculas. null/vacío = todas. */
+        public String   sqlExecTableWhitelist;
+        /** Rate limit por minuto (global del conector). null/0 = sin límite. */
+        public Integer  sqlExecRateLimitPerMinute;
+        /** Rate limit por día (global del conector). null/0 = sin límite. */
+        public Integer  sqlExecRateLimitPerDay;
+        /** Rate limit por sessionId por minuto. null/0 = sin límite. */
+        public Integer  sqlExecRateLimitPerSessionMinute;
         public Instant  createdAt;
         public Instant  updatedAt;
 
@@ -181,6 +219,14 @@ public class BotConnectorController {
             d.password      = includePassword ? e.getPassword() : null;
             d.extraParams   = e.getExtraParams();
             d.active        = e.getActive();
+            d.sqlExecEnabled    = e.getSqlExecEnabled();
+            d.sqlExecMaxRows    = e.getSqlExecMaxRows();
+            d.sqlExecTimeoutSec = e.getSqlExecTimeoutSec();
+            d.sqlExecMaxBytes   = e.getSqlExecMaxBytes();
+            d.sqlExecTableWhitelist = e.getSqlExecTableWhitelist();
+            d.sqlExecRateLimitPerMinute        = e.getSqlExecRateLimitPerMinute();
+            d.sqlExecRateLimitPerDay           = e.getSqlExecRateLimitPerDay();
+            d.sqlExecRateLimitPerSessionMinute = e.getSqlExecRateLimitPerSessionMinute();
             d.createdAt     = e.getCreatedAt();
             d.updatedAt     = e.getUpdatedAt();
             return d;
@@ -197,6 +243,36 @@ public class BotConnectorController {
             if (password != null)     e.setPassword(password);
             if (extraParams != null)  e.setExtraParams(extraParams);
             if (active != null)       e.setActive(active);
+            if (sqlExecEnabled != null)    e.setSqlExecEnabled(sqlExecEnabled);
+            if (sqlExecMaxRows != null)    e.setSqlExecMaxRows(sqlExecMaxRows);
+            if (sqlExecTimeoutSec != null) e.setSqlExecTimeoutSec(sqlExecTimeoutSec);
+            if (sqlExecMaxBytes != null)   e.setSqlExecMaxBytes(sqlExecMaxBytes);
+            if (sqlExecTableWhitelist != null) {
+                // Normalizar: minúsculas, sin espacios extra, sin duplicados.
+                // Si queda vacío después de normalizar, guardamos null (no "").
+                String csv = sqlExecTableWhitelist;
+                java.util.LinkedHashSet<String> uniq = new java.util.LinkedHashSet<>();
+                for (String s : csv.split(",")) {
+                    String t = s.trim().toLowerCase(java.util.Locale.ROOT);
+                    if (!t.isEmpty()) uniq.add(t);
+                }
+                e.setSqlExecTableWhitelist(uniq.isEmpty() ? null : String.join(",", uniq));
+            }
+            // Rate limits: 0 → null (= sin límite). El frontend manda 0 cuando
+            // el admin destildó el control, queremos guardarlo como null para
+            // que la lógica del servicio no consulte la BD innecesariamente.
+            if (sqlExecRateLimitPerMinute != null) {
+                e.setSqlExecRateLimitPerMinute(
+                        sqlExecRateLimitPerMinute <= 0 ? null : sqlExecRateLimitPerMinute);
+            }
+            if (sqlExecRateLimitPerDay != null) {
+                e.setSqlExecRateLimitPerDay(
+                        sqlExecRateLimitPerDay <= 0 ? null : sqlExecRateLimitPerDay);
+            }
+            if (sqlExecRateLimitPerSessionMinute != null) {
+                e.setSqlExecRateLimitPerSessionMinute(
+                        sqlExecRateLimitPerSessionMinute <= 0 ? null : sqlExecRateLimitPerSessionMinute);
+            }
         }
 
         /** Devuelve null si el DTO es válido para create/update, o un mensaje de error. */

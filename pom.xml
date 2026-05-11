@@ -75,10 +75,47 @@
       <artifactId>mysql-connector-j</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- ─────────────────────────────────────────────────────────────────────
+         JDBC drivers para conectores externos (BotConnector).
+         Son los 4 motores soportados por la plataforma. Se cargan en runtime
+         para no afectar tiempo de build/startup; Hikari los pide por
+         driverClassName al crear el pool del conector correspondiente.
+         ───────────────────────────────────────────────────────────────────── -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>42.7.4</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.microsoft.sqlserver</groupId>
+      <artifactId>mssql-jdbc</artifactId>
+      <version>12.8.1.jre11</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <version>23.5.0.24.07</version>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- MariaDB usa el driver de MySQL por ahora — si más adelante hace falta
+         soporte específico (LSEQ, etc.), agregamos org.mariadb.jdbc:mariadb-java-client. -->
+
     <dependency>
       <groupId>org.apache.poi</groupId>
       <artifactId>poi-ooxml</artifactId>
       <version>5.2.5</version>
+    </dependency>
+    <!-- JSqlParser — parser AST de SQL.
+         Lo usamos para validar el SQL que el LLM genera en execute_sql (Fase 2):
+         rechazamos cualquier statement que no sea SELECT simple, múltiples
+         statements separados por ;, accesos a tablas sospechosas, etc.
+         Regex no alcanza acá: se evade fácil con comentarios y casing. -->
+    <dependency>
+      <groupId>com.github.jsqlparser</groupId>
+      <artifactId>jsqlparser</artifactId>
+      <version>5.0</version>
     </dependency>
     <!-- PDFBox para extraer texto de PDFs (sistema Fuentes de datos) -->
     <dependency>
