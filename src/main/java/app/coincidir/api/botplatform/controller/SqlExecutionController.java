@@ -142,12 +142,16 @@ public class SqlExecutionController {
         out.put("since", since);
 
         // 1) Agregados generales
-        // El query devuelve un Object[] con [count, avgDur, maxDur, totalRows, totalBytes].
-        // OJO con JPA: si la query devuelve una sola fila, podemos recibir
-        // directamente Object[] o List<Object[]> según la versión. En
-        // Spring Data JPA con @Query y tipo de retorno Object[], devuelve
-        // el array directo.
-        Object[] agg = logRepo.aggregateMetrics(id, since);
+        // El query devuelve una List<Object[]> con UNA sola fila:
+        //   [count, avgDur, maxDur, totalRows, totalBytes]
+        //
+        // Antes usábamos retorno Object[] directo pero JPA con MySQL/Hibernate 6+
+        // a veces desempaca mal el primer elemento devolviendo 0 (bug observado:
+        // totalQueries=0 pese a tener 15 filas reales). Con List<Object[]> el
+        // comportamiento es predecible en todas las versiones: get(0) es la
+        // fila completa.
+        List<Object[]> aggList = logRepo.aggregateMetrics(id, since);
+        Object[] agg = (aggList != null && !aggList.isEmpty()) ? aggList.get(0) : null;
         Map<String, Object> totals = new LinkedHashMap<>();
         if (agg != null && agg.length >= 5) {
             long totalCount = agg[0] != null ? ((Number) agg[0]).longValue() : 0L;

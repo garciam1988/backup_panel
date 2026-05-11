@@ -27,19 +27,31 @@ public interface BotQueryLogRepository extends JpaRepository<BotQueryLog, Long> 
      * no nulo para evitar contaminar las stats con filas de error temprano
      * (ej: VALIDATION_FAILED) donde la duración es 0.
      *
-     * Devuelve un Object[] con los valores en este orden:
+     * Devuelve una List de Object[] con una sola fila (la agregación global).
+     * El [0] de esa fila tiene los valores en este orden:
      *   [0] total Long
      *   [1] avgDuration Double (puede venir null si total=0)
      *   [2] maxDuration Long
      *   [3] totalRows Long
      *   [4] totalBytes Long
+     *
+     * Por qué List<Object[]> y no Object[]: Spring Data / Hibernate con
+     * agregaciones sin GROUP BY a veces devuelve el resultado como wrapper
+     * raro (depende de versión / setup). Usar List<Object[]> es predecible
+     * en todas las versiones: siempre 1 fila si hay datos, 0 si la tabla
+     * está vacía. El caller hace .get(0) o defaults a ceros.
+     *
+     * El bug observado: con retorno Object[] directo, en MySQL/Hibernate 6+
+     * a veces JPA desempaca mal el primer elemento devolviendo 0 en vez del
+     * count real, mientras que las queries con GROUP BY (statusBreakdown,
+     * dailySeries) funcionan bien porque tienen forma "muchas filas".
      */
     @Query("SELECT COUNT(l), AVG(l.durationMs), MAX(l.durationMs), " +
            "       COALESCE(SUM(l.rowsReturned), 0), COALESCE(SUM(l.resultSizeBytes), 0) " +
            "FROM BotQueryLog l " +
            "WHERE l.connectorId = :connectorId AND l.createdAt >= :since")
-    Object[] aggregateMetrics(@Param("connectorId") Long connectorId,
-                              @Param("since") Instant since);
+    List<Object[]> aggregateMetrics(@Param("connectorId") Long connectorId,
+                                    @Param("since") Instant since);
 
     /**
      * Breakdown por status en el período. Devuelve filas {status, count}.
