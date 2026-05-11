@@ -133,6 +133,31 @@ public class BotConnectorController {
         }
         BotConnector tmp = new BotConnector();
         dto.applyTo(tmp);
+
+        // ────────────────────────────────────────────────────────────────────
+        // FIX: cuando se prueba un conector que YA EXISTE (form de edición),
+        // la UI no manda la password (queda enmascarada y el usuario no la
+        // re-tipea). El DTO llega con password=null y el BotConnector temporal
+        // queda intentando conectarse sin password.
+        //
+        // Síntoma observado: en MySQL, intentar conectarse sin password contra
+        // un server que sí la requiere produce un timeout (el server corta el
+        // handshake en silencio) — el usuario veía "timeout 30s" cuando en
+        // realidad el problema era credenciales vacías.
+        //
+        // Solución: si el DTO trae id y la password está vacía/null, traemos
+        // la password real desde la BD y la usamos en el test. Resto de
+        // campos (host, port, user, etc.) se respetan del DTO porque el
+        // usuario puede estar probando cambios sin haber guardado.
+        // ────────────────────────────────────────────────────────────────────
+        if (dto.id != null && (tmp.getPassword() == null || tmp.getPassword().isBlank())) {
+            repo.findById(dto.id).ifPresent(saved -> {
+                if (saved.getPassword() != null && !saved.getPassword().isBlank()) {
+                    tmp.setPassword(saved.getPassword());
+                }
+            });
+        }
+
         String err = dataSourceService.testConnection(tmp);
         if (err == null) {
             body.put("ok", true);

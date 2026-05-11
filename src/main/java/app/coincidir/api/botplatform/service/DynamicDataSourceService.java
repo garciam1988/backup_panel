@@ -84,9 +84,13 @@ public class DynamicDataSourceService {
             return "Timeout (no se pudo conectar en 30s). Causas típicas:\n"
                  + "  • Host/puerto incorrectos o la BD no acepta conexiones desde Internet.\n"
                  + "  • Firewall bloqueando el tráfico.\n"
+                 + "  • Credenciales vacías o nulas: algunos motores (MySQL) cortan el handshake "
+                 + "en silencio cuando reciben usuario sin password, lo que el cliente interpreta "
+                 + "como timeout.\n"
                  + "  • Si la BD está en Railway, probá usar el host privado interno "
                  + "(mysql.railway.internal o similar) en lugar del proxy público "
-                 + "(*.proxy.rlwy.net) — es más rápido y confiable.\n"
+                 + "(*.proxy.rlwy.net) — es más rápido y confiable, pero solo funciona si la BD "
+                 + "está en el MISMO proyecto que este backend.\n"
                  + "  • Mensaje original: " + msg;
         }
         // DNS / host no resoluble
