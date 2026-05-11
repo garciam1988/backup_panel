@@ -3,10 +3,12 @@ package app.coincidir.api.apiusage.controller;
 import app.coincidir.api.apiusage.domain.ApiPricing;
 import app.coincidir.api.apiusage.domain.UsageBudget;
 import app.coincidir.api.apiusage.repository.ApiPricingRepository;
+import app.coincidir.api.apiusage.repository.ApiUsageLogRepository;
 import app.coincidir.api.apiusage.repository.UsageBudgetRepository;
 import app.coincidir.api.apiusage.service.UsageStatsService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -18,6 +20,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * UsageDashboardController — endpoints admin para el dashboard de consumo.
@@ -30,7 +33,9 @@ import java.util.List;
  *   PUT  /api/admin/usage/budget                 → setear límites
  *   GET  /api/admin/usage/pricing                → tabla de precios
  *   PUT  /api/admin/usage/pricing/{id}           → editar fila de precios
+ *   DEL  /api/admin/usage/logs?confirm=…         → reset del histórico
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/admin/usage")
 @RequiredArgsConstructor
@@ -39,6 +44,7 @@ public class UsageDashboardController {
     private final UsageStatsService statsService;
     private final ApiPricingRepository pricingRepo;
     private final UsageBudgetRepository budgetRepo;
+    private final ApiUsageLogRepository usageLogRepo;
 
     @GetMapping("/summary")
     @Transactional(readOnly = true)
@@ -153,6 +159,39 @@ public class UsageDashboardController {
         d.active = p.getActive();
         d.updatedAt = p.getUpdatedAt();
         return d;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Reset del histórico de consumo
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // Borra TODOS los registros de api_usage_log. Solo afecta el dashboard
+    // (tarjetas hoy/mes/año + gráfico 30 días + top sesiones). NO toca
+    // api_pricing (tarifas) ni usage_budget (límites de gasto).
+    //
+    // Requiere query param `confirm=BORRAR_TODO` para evitar disparos por
+    // accidente. Devuelve cuántos registros se borraron.
+    //
+    // Curl de ejemplo:
+    //   curl -X DELETE \
+    //     -H "Authorization: Bearer <JWT_ADMIN>" \
+    //     "https://api-production-XXXX.up.railway.app/api/admin/usage/logs?confirm=BORRAR_TODO"
+
+    @DeleteMapping("/logs")
+    @Transactional
+    public Map<String, Object> resetLogs(@RequestParam(required = false) String confirm) {
+        if (!"BORRAR_TODO".equals(confirm)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Para confirmar el reset, agregá ?confirm=BORRAR_TODO");
+        }
+        long before = usageLogRepo.count();
+        usageLogRepo.deleteAllInBatch();
+        log.warn("⚠️ api_usage_log reseteado: {} registros borrados", before);
+        return Map.of(
+                "deletedRows", before,
+                "remainingRows", usageLogRepo.count(),
+                "message", "Histórico de consumo reseteado. Refrescá el dashboard."
+        );
     }
 
     // ─────────── DTOs ───────────
