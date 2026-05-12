@@ -38,6 +38,7 @@ public class TableDescriptionController {
 
     private final ConnectorTableDescriptionRepository repo;
     private final app.coincidir.api.botplatform.service.SchemaIntrospectionService schemaService;
+    private final app.coincidir.api.botplatform.service.TableDescriptionAiService aiService;
 
     @GetMapping("/{connectorId}/table-descriptions")
     @Transactional(readOnly = true)
@@ -127,5 +128,44 @@ public class TableDescriptionController {
         m.put("description", d.getDescription());
         m.put("updatedAt", d.getUpdatedAt());
         return m;
+    }
+
+    /**
+     * Generación de descripciones con IA (Fase 5 — extensión).
+     *
+     * POST /api/admin/bot-connectors/{id}/generate-table-descriptions
+     * Body: { "tableNames": ["pagos", "clientes", ...] }
+     *
+     * Para cada tabla:
+     *   1. Trae 5 filas de muestra de la BD del cliente.
+     *   2. Manda nombre+columnas+muestras a Claude (Haiku, en 1 sola call).
+     *   3. Claude devuelve descripción de 1-2 oraciones por tabla.
+     *
+     * Respuesta:
+     *   { "descriptions": { "pagos": "...", "clientes": "..." },
+     *     "requested": 10, "generated": 9 }
+     *
+     * IMPORTANTE: este endpoint solo GENERA y devuelve. NO persiste nada.
+     * El frontend rellena los textareas del form con estas descripciones y
+     * el admin las revisa antes de tocar Guardar — entonces sí se persisten
+     * vía PUT /table-descriptions normal.
+     *
+     * Si una tabla falla (no está en schema, BD inalcanzable, Claude la
+     * salta, etc.) simplemente no aparece en el mapa de respuesta. El
+     * frontend conserva el textarea vacío y el admin puede reintentar.
+     */
+    public record GenerateRequest(List<String> tableNames) {}
+
+    @PostMapping("/{connectorId}/generate-table-descriptions")
+    public Map<String, Object> generate(@PathVariable Long connectorId,
+                                        @RequestBody GenerateRequest body) {
+        List<String> tables = body == null ? List.of() : body.tableNames();
+        Map<String, String> generated = aiService.generate(connectorId, tables);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("descriptions", generated);
+        out.put("requested", tables == null ? 0 : tables.size());
+        out.put("generated", generated.size());
+        return out;
     }
 }
