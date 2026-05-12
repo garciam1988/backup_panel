@@ -2,8 +2,10 @@ package app.coincidir.api.botplatform.service;
 
 import app.coincidir.api.botplatform.domain.BotConnector;
 import app.coincidir.api.botplatform.domain.ConnectorSchemaCache;
+import app.coincidir.api.botplatform.domain.ConnectorTableDescription;
 import app.coincidir.api.botplatform.repository.BotConnectorRepository;
 import app.coincidir.api.botplatform.repository.ConnectorSchemaCacheRepository;
+import app.coincidir.api.botplatform.repository.ConnectorTableDescriptionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,6 +45,7 @@ public class SchemaIntrospectionService {
 
     private final BotConnectorRepository connectorRepo;
     private final ConnectorSchemaCacheRepository cacheRepo;
+    private final ConnectorTableDescriptionRepository descRepo;
     private final DynamicDataSourceService dataSourceService;
     private final ObjectMapper jsonMapper = new ObjectMapper();
 
@@ -102,6 +105,46 @@ public class SchemaIntrospectionService {
 
     public Optional<ConnectorSchemaCache> getCached(Long connectorId) {
         return cacheRepo.findByConnectorId(connectorId);
+    }
+
+    /**
+     * Re-genera el llmSummary del cache reusando el schemaJson ya escaneado.
+     * No vuelve a pegar a la BD del cliente — solo re-arma el texto que se le
+     * sirve al LLM, leyendo del schemaJson cacheado + glossary del conector +
+     * descripciones por tabla cargadas en `connector_table_description`.
+     *
+     * Se usa cuando el admin cambia el glossary o las descripciones: queremos
+     * que el cambio se refleje sin forzar un re-scan completo (que sería
+     * lento y además podría fallar si la BD del cliente está down justo en
+     * ese momento — innecesario para un cambio de texto).
+     *
+     * Si no hay cache previa (nunca se introspectó), no hace nada y devuelve
+     * empty. El llmSummary se va a generar la próxima vez que se haga el
+     * scan inicial.
+     */
+    @Transactional
+    public Optional<ConnectorSchemaCache> regenerateLlmSummary(Long connectorId) {
+        ConnectorSchemaCache cache = cacheRepo.findByConnectorId(connectorId).orElse(null);
+        if (cache == null || cache.getSchemaJson() == null) {
+            return Optional.empty();
+        }
+        BotConnector connector = connectorRepo.findById(connectorId).orElse(null);
+        if (connector == null) {
+            return Optional.empty();
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> schema = jsonMapper.readValue(cache.getSchemaJson(), Map.class);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> tables = (List<Map<String, Object>>) schema.getOrDefault("tables", List.of());
+            String newSummary = buildLlmSummary(connector, tables);
+            cache.setLlmSummary(newSummary);
+            return Optional.of(cacheRepo.save(cache));
+        } catch (Exception e) {
+            log.warn("[schema-introspect] regenerateLlmSummary falló para connector {}: {}",
+                    connectorId, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -436,6 +479,39 @@ public class SchemaIntrospectionService {
         sb.append("-- Base: ").append(connector.getDbType()).append(" (")
           .append(tables.size()).append(" tablas, ").append(totalCols).append(" columnas)\n\n");
 
+        // Glosario de negocio (Fase 5) — se inyecta al principio para que
+        // Claude lo lea primero y tenga el contexto antes de mirar las
+        // tablas. Solo se incluye si el admin lo configuró.
+        String glossary = connector.getBusinessGlossary();
+        if (glossary != null && !glossary.isBlank()) {
+            sb.append("-- GLOSARIO DE NEGOCIO ---\n");
+            // Comentamos cada línea con `-- ` para mantener el formato
+            // tipo SQL comment y que Claude lo lea como contexto pasivo,
+            // no como código. Truncamos al primer salto de línea final
+            // para no dejar líneas vacías al final del bloque.
+            for (String line : glossary.trim().split("\\R", -1)) {
+                sb.append("-- ").append(line).append("\n");
+            }
+            sb.append("-- (fin glosario)\n\n");
+        }
+
+        // Descripciones por tabla (Fase 5). Las cargamos una sola vez en
+        // un map para evitar N queries: una por tabla del schema.
+        Map<String, String> descByTable = new HashMap<>();
+        try {
+            for (ConnectorTableDescription d : descRepo.findByConnectorIdOrderByTableNameAsc(connector.getId())) {
+                if (d.getTableName() != null && d.getDescription() != null) {
+                    descByTable.put(d.getTableName().toLowerCase(Locale.ROOT),
+                                    d.getDescription());
+                }
+            }
+        } catch (Exception e) {
+            // Si falla la carga (improbable), seguimos sin descripciones.
+            // No queremos que el introspect entero rompa por esto.
+            log.warn("[schema-introspect] no pude cargar descripciones de tabla para connector {}: {}",
+                    connector.getId(), e.getMessage());
+        }
+
         for (Map<String, Object> table : tables) {
             String name = (String) table.get("name");
             @SuppressWarnings("unchecked")
@@ -449,6 +525,16 @@ public class SchemaIntrospectionService {
                 fkByCol.put(
                         (String) fk.get("column"),
                         fk.get("refTable") + "." + fk.get("refColumn"));
+            }
+
+            // Inyectar descripción si la tabla tiene una cargada (case-insensitive).
+            String desc = name == null ? null : descByTable.get(name.toLowerCase(Locale.ROOT));
+            if (desc != null && !desc.isBlank()) {
+                // Cada línea de la descripción va como comment, así si el
+                // admin escribió múltiples líneas todas quedan claras.
+                for (String line : desc.trim().split("\\R", -1)) {
+                    sb.append("-- ").append(line).append("\n");
+                }
             }
 
             sb.append("TABLE ").append(name).append(" (\n");

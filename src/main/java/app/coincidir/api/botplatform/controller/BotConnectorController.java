@@ -38,6 +38,7 @@ public class BotConnectorController {
 
     private final BotConnectorRepository repo;
     private final DynamicDataSourceService dataSourceService;
+    private final app.coincidir.api.botplatform.service.SchemaIntrospectionService schemaService;
 
     @GetMapping
     @Transactional(readOnly = true)
@@ -85,10 +86,23 @@ public class BotConnectorController {
         String err = dto.validate();
         if (err != null) return ResponseEntity.badRequest().body(Map.of("error", err));
         BotConnector e = opt.get();
+        // Capturamos el glossary previo ANTES del applyTo para detectar
+        // si cambió y, en ese caso, re-generar el llmSummary cacheado.
+        String oldGlossary = e.getBusinessGlossary();
         dto.applyTo(e);
         BotConnector saved = repo.save(e);
         // Invalidar el pool cacheado — las credenciales pueden haber cambiado
         dataSourceService.invalidate(id);
+        // Si cambió el glossary, regeneramos el llmSummary del cache para
+        // que el bot vea el cambio sin tener que re-escanear toda la BD.
+        if (!java.util.Objects.equals(oldGlossary, saved.getBusinessGlossary())) {
+            try {
+                schemaService.regenerateLlmSummary(id);
+                log.info("bot_connector id={} — llmSummary regenerado por cambio de glossary", id);
+            } catch (Exception ex) {
+                log.warn("No pude regenerar llmSummary para connector {}: {}", id, ex.getMessage());
+            }
+        }
         log.info("bot_connector actualizado: id={}", id);
         return ResponseEntity.ok(BotConnectorDto.fromEntity(saved));
     }
@@ -198,6 +212,8 @@ public class BotConnectorController {
         public Integer  sqlExecRateLimitPerDay;
         /** Rate limit por sessionId por minuto. null/0 = sin límite. */
         public Integer  sqlExecRateLimitPerSessionMinute;
+        /** Glosario de negocio en lenguaje natural. null/blank = sin glosario. */
+        public String   businessGlossary;
         public Instant  createdAt;
         public Instant  updatedAt;
 
@@ -227,6 +243,7 @@ public class BotConnectorController {
             d.sqlExecRateLimitPerMinute        = e.getSqlExecRateLimitPerMinute();
             d.sqlExecRateLimitPerDay           = e.getSqlExecRateLimitPerDay();
             d.sqlExecRateLimitPerSessionMinute = e.getSqlExecRateLimitPerSessionMinute();
+            d.businessGlossary = e.getBusinessGlossary();
             d.createdAt     = e.getCreatedAt();
             d.updatedAt     = e.getUpdatedAt();
             return d;
@@ -272,6 +289,12 @@ public class BotConnectorController {
             if (sqlExecRateLimitPerSessionMinute != null) {
                 e.setSqlExecRateLimitPerSessionMinute(
                         sqlExecRateLimitPerSessionMinute <= 0 ? null : sqlExecRateLimitPerSessionMinute);
+            }
+            if (businessGlossary != null) {
+                // Trim y blank → null para consistencia (lo mismo que con
+                // los otros campos opcionales).
+                String g = businessGlossary.trim();
+                e.setBusinessGlossary(g.isEmpty() ? null : g);
             }
         }
 

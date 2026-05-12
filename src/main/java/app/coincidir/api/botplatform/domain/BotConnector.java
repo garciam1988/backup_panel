@@ -161,6 +161,28 @@ public class BotConnector {
     @Column(name = "sql_exec_rate_limit_per_session_minute")
     private Integer sqlExecRateLimitPerSessionMinute;
 
+    /**
+     * Glosario de negocio en lenguaje natural. Texto libre que se inyecta
+     * al inicio del llmSummary (antes de cualquier tabla) para darle a
+     * Claude reglas de negocio, sinónimos y definiciones que NO puede
+     * inferir solo a partir del schema.
+     *
+     * Ejemplos típicos:
+     *   - "Facturación = suma de pagos.monto con status='confirmado'"
+     *   - "La semana laboral va de lunes a viernes"
+     *   - "Precios en USD se convierten con parametros.cotizacion_usd"
+     *   - "Cliente 'activo' = última compra hace menos de 90 días"
+     *
+     * null/blank = sin glosario (no se inyecta nada).
+     *
+     * Cuidado con el largo: el contenido va dentro del system prompt y
+     * cuenta para el contexto. Recomendable mantenerlo bajo ~2000 tokens.
+     * No imponemos límite duro acá — el truncado real lo hace el frontend
+     * al armar la tool description si se pasa de cierto tamaño.
+     */
+    @Column(name = "business_glossary", columnDefinition = "TEXT")
+    private String businessGlossary;
+
     public int getMaxRows()       { return sqlExecMaxRows    != null ? sqlExecMaxRows    : 100; }
     public int getTimeoutSec()    { return sqlExecTimeoutSec != null ? sqlExecTimeoutSec : 10; }
     public int getMaxBytes()      { return sqlExecMaxBytes   != null ? sqlExecMaxBytes   : 1_000_000; }
