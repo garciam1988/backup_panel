@@ -66,9 +66,17 @@ public class ConnectorSchemaCache {
      * Claude. Formato compacto tipo CREATE TABLE simplificado, sin tipos
      * exactos (ej: "INT" en vez de "BIGINT UNSIGNED"). El bot ve esto y
      * decide qué query armar.
+     *
+     * MEDIUMTEXT (no TEXT): TEXT tiene límite de ~65KB. Con BDs de 100+ tablas
+     * + descripciones por tabla cargadas (Fase 5) + glosario de negocio,
+     * el resumen puede pasar fácilmente de 65KB. MEDIUMTEXT da ~16MB de
+     * margen, más que suficiente para cualquier caso razonable.
+     *
+     * Si ya existe la columna como TEXT en una BD existente, migrar con:
+     *   ALTER TABLE connector_schema_cache MODIFY COLUMN llm_summary MEDIUMTEXT;
      */
     @Lob
-    @Column(name = "llm_summary", columnDefinition = "TEXT")
+    @Column(name = "llm_summary", columnDefinition = "MEDIUMTEXT")
     private String llmSummary;
 
     @Column(name = "table_count")
