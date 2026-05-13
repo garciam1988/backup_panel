@@ -79,6 +79,13 @@ public class SecurityConfig {
                         // exponen DTOs acotados (sin metadata sensible).
                         .requestMatchers(HttpMethod.GET,  "/api/public/**").permitAll()
 
+                        // ── Marketing/Loyalty: PWA pública del cliente ──
+                        // La PWA usa el customer_hash en la URL como bearer
+                        // alternativo; no requiere JWT panel. Permitimos POST
+                        // públicos sobre /api/public/loyalty/** (enroll,
+                        // redeem-request, push-subscription, etc).
+                        .requestMatchers("/api/public/loyalty/**").permitAll()
+
                         // swaggerr
                         .requestMatchers(
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html"

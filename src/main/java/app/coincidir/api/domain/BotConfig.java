@@ -264,6 +264,35 @@ public class BotConfig {
     @Column(name = "data_request_prompt", columnDefinition = "TEXT")
     private String dataRequestPrompt;
 
+    // ── Módulo Marketing (Loyalty + Campañas) ─────────────────────
+    /**
+     * Si es true, el módulo Marketing está activo en este deploy. Cuando es
+     * false, los endpoints /api/admin/marketing/** y /api/public/loyalty/**
+     * siguen existiendo pero el panel admin oculta la sección y el bot no
+     * expone tools de loyalty.
+     */
+    @Column(name = "marketing_enabled")
+    private Boolean marketingEnabled;
+
+    /**
+     * Configuración JSON del módulo Marketing. Forma esperada:
+     * {
+     *   "programId": 1,
+     *   "exposedTools": ["get_loyalty_status","enroll_customer","list_rewards",
+     *                    "redeem_reward","get_active_campaigns","get_active_coupons"],
+     *   "pwaBaseUrl": "https://loyalty.cliente.com",
+     *   "enrollment": { "askBirthdate": true, "askEmail": true,
+     *                   "consentText": "Acepto recibir promos por WhatsApp" },
+     *   "channels": {
+     *     "whatsapp": { "enabled": true, "twilioFromNumber": "+5491155555555" },
+     *     "email":    { "enabled": true },
+     *     "webpush":  { "enabled": true, "vapidPublicKey": "..." }
+     *   }
+     * }
+     */
+    @Column(name = "marketing_config_json", columnDefinition = "LONGTEXT")
+    private String marketingConfigJson;
+
     // ── Auditoría ─────────────────────────────────────────────────
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
