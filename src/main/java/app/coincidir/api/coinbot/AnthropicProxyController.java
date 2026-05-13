@@ -1,78 +1,43 @@
 package app.coincidir.api.coinbot;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
-import org.springframework.web.bind.annotation.*;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
- * AnthropicProxyController — Proxy server-side para llamadas a la API de Anthropic.
+ * AnthropicProxyController — DESHABILITADO desde 2026-05-13.
  *
- * Permite que el frontend (app móvil Capacitor) llame a Anthropic sin exponer
- * la API key en el cliente ni sufrir bloqueos CORS de Anthropic.
+ * Este proxy permitía que cualquier cliente externo (frontend Capacitor,
+ * scripts, etc.) llamara a la API de Anthropic usando la API key del
+ * servidor. Al no validar el modelo solicitado ni autenticar al cliente,
+ * cualquiera con conocimiento del endpoint podía consumir tokens contra
+ * nuestra cuenta — incluyendo modelos caros como claude-sonnet-4-5 o
+ * claude-opus-* — sin que aparezca en ningún scheduler del backend.
  *
- * Endpoint:
- *   POST /api/coinbot/anthropic/messages → proxy a https://api.anthropic.com/v1/messages
+ * Para reactivar (NO recomendado sin antes endurecerlo):
+ *   1. Agregar autenticación obligatoria (JWT del panel admin, no público).
+ *   2. Validar que el modelo solicitado esté en una whitelist.
+ *   3. Rate limit por IP y por usuario.
+ *   4. Loguear cada llamada en api_usage_log (ya existe la tabla).
  *
- * La API key se configura en application.yml:
- *   coincidir:
- *     anthropic-key: sk-ant-api03-...
- * O por variable de entorno: ANTHROPIC_KEY
+ * Mientras tanto devuelve 503 Service Unavailable.
  */
 @Slf4j
 @RestController
 @RequestMapping("/api/coinbot/anthropic")
 public class AnthropicProxyController {
 
-    @Value("${coincidir.anthropic-key:}")
-    private String anthropicKey;
-
-    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(15))
-            .version(java.net.http.HttpClient.Version.HTTP_1_1)
-            .build();
-
-    private static final String ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-
     @PostMapping("/messages")
-    public ResponseEntity<String> proxyMessages(@RequestBody String body) {
-        if (anthropicKey == null || anthropicKey.isBlank()) {
-            log.error("[AnthropicProxy] API key no configurada");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("{\"error\":\"Anthropic API key no configurada en el servidor\"}");
-        }
-
-        log.info("[AnthropicProxy] POST /messages — forwarding to Anthropic");
-
-        try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(ANTHROPIC_URL))
-                    .timeout(Duration.ofSeconds(60))
-                    .header("Content-Type", "application/json")
-                    .header("x-api-key", anthropicKey)
-                    .header("anthropic-version", "2023-06-01")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
-
-            HttpResponse<String> response = HTTP_CLIENT.send(request,
-                    HttpResponse.BodyHandlers.ofString());
-
-            log.info("[AnthropicProxy] Anthropic response status={}", response.statusCode());
-
-            return ResponseEntity.status(response.statusCode())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(response.body());
-
-        } catch (Exception e) {
-            log.error("[AnthropicProxy] Error llamando a Anthropic: {}", e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .body("{\"error\":\"Error comunicando con Anthropic: " + e.getMessage() + "\"}");
-        }
+    public ResponseEntity<String> proxyMessages(@RequestBody(required = false) String body) {
+        log.warn("[AnthropicProxy] Intento de uso del proxy deshabilitado — bodyLen={}",
+                body == null ? 0 : body.length());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"error\":\"Anthropic proxy deshabilitado\",\"reason\":\"Endpoint cerrado por control de costos. Contactar al admin para reactivar con autenticación.\"}");
     }
 }
