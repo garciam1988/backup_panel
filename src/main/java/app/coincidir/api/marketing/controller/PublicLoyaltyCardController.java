@@ -1,5 +1,6 @@
 package app.coincidir.api.marketing.controller;
 
+import app.coincidir.api.domain.BotConfig;
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
 import app.coincidir.api.marketing.domain.LoyaltyProgram;
 import app.coincidir.api.marketing.dto.MarketingDtos.CardDto;
@@ -16,6 +17,7 @@ import app.coincidir.api.marketing.service.LoyaltyProgramService;
 import app.coincidir.api.marketing.service.LoyaltyRewardService;
 import app.coincidir.api.marketing.service.LoyaltyTransactionService;
 import app.coincidir.api.marketing.service.WebPushService;
+import app.coincidir.api.repository.BotConfigRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -58,6 +60,7 @@ public class PublicLoyaltyCardController {
     private final LoyaltyTransactionService transactionService;
     private final CouponService couponService;
     private final WebPushService webPushService;
+    private final BotConfigRepository botConfigRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -212,8 +215,14 @@ public class PublicLoyaltyCardController {
         return customerService.findByHash(customerHash).map(cust -> {
             LoyaltyProgram program = programService.getActiveProgram();
 
+            // BotConfig singleton (id=1) — fuente de fallback para branding.
+            // Muchos clientes ya tienen el logo y el nombre cargados en /admin
+            // del bot, así que reutilizamos eso si el módulo Marketing todavía
+            // no lo tiene customizado.
+            BotConfig botConfig = botConfigRepository.findById(1L).orElse(null);
+
             // Defaults
-            String name = program.getName() != null ? program.getName() : "Tarjeta digital";
+            String name = resolveName(program, botConfig);
             String shortName = shortenName(name);
             String themeColor = "#1D3557";
             String backgroundColor = "#FFFFFF";
@@ -244,6 +253,26 @@ public class PublicLoyaltyCardController {
             } catch (Exception e) {
                 log.warn("[Manifest] error parseando cardDesignJson para customerHash={}: {}",
                     customerHash, e.getMessage());
+            }
+
+            // Fallback: si no hay logo en cardDesign, usar el del bot_config.
+            // El admin generalmente lo carga ahí PRIMERO (es la config inicial
+            // del cliente) así que es muy probable que esté disponible.
+            // Aceptamos URLs http(s) y también data:image base64 (que es como
+            // BotConfig a veces los guarda); en ese caso lo serviríamos
+            // embebido en el manifest — funciona pero hace el manifest pesado,
+            // ideal sería tener URL http(s). Si es data: largo, lo descartamos
+            // porque el manifest tiene límites de tamaño en algunos browsers.
+            if (logoUrl == null && botConfig != null && botConfig.getLogoUrl() != null) {
+                String botLogo = botConfig.getLogoUrl().trim();
+                if (botLogo.startsWith("http://") || botLogo.startsWith("https://")) {
+                    logoUrl = botLogo;
+                } else if (botLogo.startsWith("data:image/") && botLogo.length() < 100_000) {
+                    // data:image embebido razonablemente chico (< ~100KB base64)
+                    logoUrl = botLogo;
+                } else {
+                    log.debug("[Manifest] bot_config.logo_url no es URL http(s) ni data:image chico, se descarta");
+                }
             }
 
             // Armar la lista de icons. Si hay logoUrl del cliente, lo usamos
@@ -353,6 +382,40 @@ public class PublicLoyaltyCardController {
         return "";
     }
 
+    /**
+     * Resuelve el nombre que va a aparecer en la PWA instalada.
+     * Prioridad:
+     *   1) loyalty_program.name si NO es el default genérico
+     *   2) bot_config.brand_name si está cargado
+     *   3) bot_config.bot_name como fallback
+     *   4) String genérico "Tarjeta digital" si nada está cargado
+     *
+     * "Programa de Fidelización" es el name por default que crea el módulo
+     * al inicializar, así que lo tratamos como "no configurado" y caemos al
+     * brandName del bot.
+     */
+    private String resolveName(LoyaltyProgram program, BotConfig botConfig) {
+        String programName = program.getName();
+        boolean isDefault = programName == null
+            || programName.isBlank()
+            || "Programa de Fidelización".equalsIgnoreCase(programName.trim())
+            || "Programa de fidelización".equalsIgnoreCase(programName.trim());
+
+        if (!isDefault) {
+            return programName.trim();
+        }
+
+        if (botConfig != null) {
+            if (botConfig.getBrandName() != null && !botConfig.getBrandName().isBlank()) {
+                return botConfig.getBrandName().trim();
+            }
+            if (botConfig.getBotName() != null && !botConfig.getBotName().isBlank()) {
+                return botConfig.getBotName().trim();
+            }
+        }
+        return programName != null && !programName.isBlank() ? programName : "Tarjeta digital";
+    }
+
     /** Acorta nombre largo para short_name (max 12 chars recomendado por W3C). */
     private String shortenName(String name) {
         if (name == null) return "Tarjeta";
@@ -364,9 +427,17 @@ public class PublicLoyaltyCardController {
         return firstWord.substring(0, 12);
     }
 
-    /** Detecta mime type por extensión, fallback a png. */
+    /** Detecta mime type por URL o data URI, fallback a png. */
     private String guessImageMime(String url) {
         if (url == null) return "image/png";
+        // data:image/png;base64,... → extraer el mime después de "data:"
+        if (url.startsWith("data:")) {
+            int semi = url.indexOf(';');
+            if (semi > 5) {
+                return url.substring(5, semi); // "image/png" / "image/jpeg" / etc.
+            }
+            return "image/png";
+        }
         String lower = url.toLowerCase();
         if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
         if (lower.endsWith(".webp")) return "image/webp";
