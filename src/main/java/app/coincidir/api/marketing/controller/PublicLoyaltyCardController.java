@@ -1,6 +1,7 @@
 package app.coincidir.api.marketing.controller;
 
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
+import app.coincidir.api.marketing.domain.LoyaltyProgram;
 import app.coincidir.api.marketing.dto.MarketingDtos.CardDto;
 import app.coincidir.api.marketing.dto.MarketingDtos.CouponDto;
 import app.coincidir.api.marketing.dto.MarketingDtos.CustomerDto;
@@ -15,10 +16,16 @@ import app.coincidir.api.marketing.service.LoyaltyProgramService;
 import app.coincidir.api.marketing.service.LoyaltyRewardService;
 import app.coincidir.api.marketing.service.LoyaltyTransactionService;
 import app.coincidir.api.marketing.service.WebPushService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,6 +45,7 @@ import java.util.Map;
  *   - Premios disponibles (filtrados por vigencia y stock).
  *   - Últimas transacciones (para el feed).
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/public/loyalty")
 @RequiredArgsConstructor
@@ -50,6 +58,7 @@ public class PublicLoyaltyCardController {
     private final LoyaltyTransactionService transactionService;
     private final CouponService couponService;
     private final WebPushService webPushService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping("/card/{customerHash}")
     public ResponseEntity<?> getCard(@PathVariable String customerHash) {
@@ -162,5 +171,137 @@ public class PublicLoyaltyCardController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", e.getMessage()));
         }
+    }
+
+    /**
+     * Manifest PWA dinámico, customizado por cliente del programa.
+     *
+     * Cuando el cliente final abre /c/{hash}, el index.html inyecta este
+     * link como manifest. Al instalar la PWA, el navegador usa estos valores:
+     *   - name / short_name: nombre del programa (ej: "Mikhuna Nikkei")
+     *   - icons: el logoUrl del cardDesignJson (no íconos genéricos)
+     *   - start_url: /c/{hash} → al abrir el ícono se carga LA TARJETA del
+     *     cliente, no el bot ni la raíz del dominio.
+     *   - theme_color: el color primario del diseño
+     *
+     * Servimos con content-type "application/manifest+json" como pide W3C.
+     * NO cacheamos en CDN agresivamente porque el admin puede cambiar el
+     * branding y queremos que se refleje pronto.
+     *
+     * Si el hash no existe, devolvemos 404 (igual que la card view).
+     */
+    @GetMapping(value = "/card/{customerHash}/manifest.json", produces = "application/manifest+json")
+    public ResponseEntity<?> getManifest(@PathVariable String customerHash) {
+        return customerService.findByHash(customerHash).map(cust -> {
+            LoyaltyProgram program = programService.getActiveProgram();
+
+            // Defaults
+            String name = program.getName() != null ? program.getName() : "Tarjeta digital";
+            String shortName = shortenName(name);
+            String themeColor = "#1D3557";
+            String backgroundColor = "#FFFFFF";
+            String logoUrl = null;
+
+            // Parseamos cardDesignJson si está presente
+            try {
+                if (program.getCardDesignJson() != null && !program.getCardDesignJson().isBlank()) {
+                    JsonNode cd = objectMapper.readTree(program.getCardDesignJson());
+                    if (cd.hasNonNull("secondaryColor")) {
+                        themeColor = cd.get("secondaryColor").asText(themeColor);
+                    }
+                    if (cd.hasNonNull("logoUrl")) {
+                        String raw = cd.get("logoUrl").asText("").trim();
+                        if (!raw.isEmpty()) logoUrl = raw;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[Manifest] error parseando cardDesignJson para customerHash={}: {}",
+                    customerHash, e.getMessage());
+            }
+
+            // Armar la lista de icons. Si hay logoUrl del cliente, lo usamos
+            // como ícono principal en 2 tamaños declarados (any). Los
+            // navegadores se encargan de reescalar para los launchers.
+            // Si no hay logo, fallback a los íconos genéricos /icon-192.png
+            // y /icon-512.png que ya existen como respaldo.
+            List<Map<String, Object>> icons = new java.util.ArrayList<>();
+            if (logoUrl != null) {
+                icons.add(Map.of(
+                    "src", logoUrl,
+                    "sizes", "192x192",
+                    "type", guessImageMime(logoUrl),
+                    "purpose", "any"
+                ));
+                icons.add(Map.of(
+                    "src", logoUrl,
+                    "sizes", "512x512",
+                    "type", guessImageMime(logoUrl),
+                    "purpose", "any"
+                ));
+                // Maskable: necesita padding, sigue siendo el mismo asset pero
+                // declarado distinto para Android adaptive icons. Por ahora
+                // reusamos el mismo (el ideal sería tener una versión maskable
+                // dedicada por cliente, pero alcanza para no tener placeholder).
+                icons.add(Map.of(
+                    "src", logoUrl,
+                    "sizes", "512x512",
+                    "type", guessImageMime(logoUrl),
+                    "purpose", "maskable"
+                ));
+            } else {
+                icons.add(Map.of(
+                    "src", "/icon-192.png",
+                    "sizes", "192x192",
+                    "type", "image/png",
+                    "purpose", "any maskable"
+                ));
+                icons.add(Map.of(
+                    "src", "/icon-512.png",
+                    "sizes", "512x512",
+                    "type", "image/png",
+                    "purpose", "any maskable"
+                ));
+            }
+
+            Map<String, Object> manifest = new LinkedHashMap<>();
+            manifest.put("name", name);
+            manifest.put("short_name", shortName);
+            manifest.put("description", "Tarjeta de fidelización digital");
+            manifest.put("start_url", "/c/" + customerHash);
+            manifest.put("scope", "/c/");
+            manifest.put("display", "standalone");
+            manifest.put("orientation", "portrait");
+            manifest.put("background_color", backgroundColor);
+            manifest.put("theme_color", themeColor);
+            manifest.put("icons", icons);
+            manifest.put("categories", List.of("business", "lifestyle"));
+
+            return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/manifest+json"))
+                .header("Cache-Control", "public, max-age=300") // 5min — refresco rápido si cambian branding
+                .body((Object) manifest);
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    /** Acorta nombre largo para short_name (max 12 chars recomendado por W3C). */
+    private String shortenName(String name) {
+        if (name == null) return "Tarjeta";
+        String trimmed = name.trim();
+        if (trimmed.length() <= 12) return trimmed;
+        // Tomar primera palabra; si excede igual, cortar
+        String firstWord = trimmed.split("\\s+")[0];
+        if (firstWord.length() <= 12) return firstWord;
+        return firstWord.substring(0, 12);
+    }
+
+    /** Detecta mime type por extensión, fallback a png. */
+    private String guessImageMime(String url) {
+        if (url == null) return "image/png";
+        String lower = url.toLowerCase();
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".webp")) return "image/webp";
+        if (lower.endsWith(".svg")) return "image/svg+xml";
+        if (lower.endsWith(".gif")) return "image/gif";
+        return "image/png";
     }
 }
