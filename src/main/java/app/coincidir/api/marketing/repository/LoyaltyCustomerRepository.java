@@ -59,4 +59,7 @@ public interface LoyaltyCustomerRepository extends JpaRepository<LoyaltyCustomer
     List<LoyaltyCustomer> findInactiveSince(@Param("cutoff") Instant cutoff);
 
     long countByDeletedAtIsNullAndActiveTrue();
+
+    /** Lista todos los clientes loyalty activos (no eliminados). */
+    List<LoyaltyCustomer> findByDeletedAtIsNullOrderByEnrolledAtDesc();
 }

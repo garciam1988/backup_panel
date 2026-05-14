@@ -471,6 +471,7 @@ public class BotTableAdminController {
         if (r.injectToPrompt != null) t.setInjectToPrompt(r.injectToPrompt);
         if (r.injectFields != null) t.setInjectFields(r.injectFields.isBlank() ? null : r.injectFields.trim());
         if (r.emailColumn != null) t.setEmailColumn(r.emailColumn.isBlank() ? null : r.emailColumn.trim());
+        if (r.phoneColumn != null) t.setPhoneColumn(r.phoneColumn.isBlank() ? null : r.phoneColumn.trim());
         if (r.reminderDateColumn != null) t.setReminderDateColumn(r.reminderDateColumn.isBlank() ? null : r.reminderDateColumn.trim());
         if (r.reminderHoursBefore != null) t.setReminderHoursBefore(r.reminderHoursBefore <= 0 ? null : r.reminderHoursBefore);
         if (r.panelConfigJson != null) t.setPanelConfigJson(r.panelConfigJson.isBlank() ? null : r.panelConfigJson);
@@ -490,6 +491,7 @@ public class BotTableAdminController {
         d.injectToPrompt = t.getInjectToPrompt();
         d.injectFields = t.getInjectFields();
         d.emailColumn = t.getEmailColumn();
+        d.phoneColumn = t.getPhoneColumn();
         d.reminderDateColumn = t.getReminderDateColumn();
         d.reminderHoursBefore = t.getReminderHoursBefore();
         d.panelConfigJson = t.getPanelConfigJson();
@@ -525,6 +527,7 @@ public class BotTableAdminController {
         public Boolean injectToPrompt;
         public String injectFields;
         public String emailColumn;
+        public String phoneColumn;
         public String reminderDateColumn;
         public Integer reminderHoursBefore;
         public String panelConfigJson;
@@ -544,6 +547,7 @@ public class BotTableAdminController {
         public Boolean injectToPrompt;
         public String injectFields;
         public String emailColumn;
+        public String phoneColumn;
         public String reminderDateColumn;
         public Integer reminderHoursBefore;
         public String panelConfigJson;

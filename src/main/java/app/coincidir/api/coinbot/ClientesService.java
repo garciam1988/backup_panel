@@ -5,6 +5,9 @@ import app.coincidir.api.botplatform.domain.BotTableRecord;
 import app.coincidir.api.botplatform.repository.BotTableRecordRepository;
 import app.coincidir.api.botplatform.repository.BotTableRepository;
 import app.coincidir.api.domain.ConversationLog;
+import app.coincidir.api.marketing.domain.LoyaltyCustomer;
+import app.coincidir.api.marketing.repository.LoyaltyCustomerRepository;
+import app.coincidir.api.marketing.util.PhoneNormalizer;
 import app.coincidir.api.repository.ConversationLogRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,14 +21,22 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * ClientesService — agrupa ConversationLog + BotTableRecord (reservas) por cliente
- * y calcula las métricas para el módulo /admin > Clientes.
+ * ClientesService — agrupa ConversationLog + BotTableRecord (reservas) +
+ * loyalty_customer (módulo Marketing) por cliente y calcula las métricas
+ * para el módulo /admin > Clientes.
  *
  * Identidad de cliente: combinación de nombre+apellido+(email O teléfono).
- * Solo se devuelven clientes que tengan al menos 1 RESERVA REAL (un BotTableRecord
- * en alguna tabla con emailColumn configurada que matchee con sus datos).
+ * Devuelve clientes que tengan:
+ *   - Al menos 1 RESERVA REAL (un BotTableRecord en alguna tabla con
+ *     emailColumn configurada que matchee con sus datos), o
+ *   - Estén enrolados en el módulo Marketing (loyalty_customer activo),
+ *     incluso si todavía no reservaron.
  *
  * El matching es case-insensitive, normalizado (sin tildes, sin espacios extra).
+ * Los clientes loyalty se matchean con los existentes por teléfono normalizado
+ * (E.164). Si un loyalty_customer ya está cubierto por una reserva, se enriquece
+ * el DTO existente con la info del programa; si no, se agrega como cliente nuevo
+ * con source="MARKETING_ONLY".
  */
 @Slf4j
 @Service
@@ -35,6 +46,7 @@ public class ClientesService {
     private final ConversationLogRepository convRepo;
     private final BotTableRepository tableRepo;
     private final BotTableRecordRepository recordRepo;
+    private final LoyaltyCustomerRepository loyaltyRepo;
     private final ObjectMapper objectMapper;
 
     /**
@@ -70,11 +82,13 @@ public class ClientesService {
             convsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(c);
         }
 
-        // Construir DTO por cliente — SOLO si tiene al menos 1 reserva real
+        // Construir DTO por cliente — primero los que tienen al menos 1 reserva real
         List<ClienteDto> out = new ArrayList<>();
         Set<String> processedKeys = new HashSet<>();
+        // Tracking de phones que ya están cubiertos por alguna reserva, para no
+        // duplicar clientes al sumar loyalty_customer abajo.
+        Set<String> coveredPhones = new HashSet<>();
 
-        // Primero: clientes que aparecen en reservas (haya o no conversación)
         for (Map.Entry<String, List<ReservaInfo>> e : reservasByKey.entrySet()) {
             String key = e.getKey();
             if (processedKeys.contains(key)) continue;
@@ -83,7 +97,69 @@ public class ClientesService {
             List<ReservaInfo> reservas = e.getValue();
             List<ConversationLog> convs = convsByKey.getOrDefault(key, Collections.emptyList());
             ClienteDto dto = buildClienteDto(key, convs, reservas);
-            if (dto != null) out.add(dto);
+            if (dto != null) {
+                dto.source = "BOT";  // tiene reserva real del bot
+                out.add(dto);
+
+                // Marcar el phone normalizado como cubierto para el merge con loyalty
+                if (dto.telefono != null) {
+                    String np = PhoneNormalizer.normalize(dto.telefono);
+                    if (np != null) coveredPhones.add(np);
+                }
+            }
+        }
+
+        // ── Reverso: incluir loyalty_customer del módulo Marketing ──────────
+        // Para cada cliente loyalty:
+        //   - Si su phone (normalizado) ya está cubierto por una reserva del
+        //     bot → enriquecemos el DTO existente con loyaltyEnrolled=true.
+        //   - Si NO está cubierto → agregamos un cliente nuevo con
+        //     source="MARKETING_ONLY".
+        try {
+            List<LoyaltyCustomer> loyalty = loyaltyRepo.findByDeletedAtIsNullOrderByEnrolledAtDesc();
+            for (LoyaltyCustomer lc : loyalty) {
+                String np = lc.getPhone(); // ya está en E.164
+                if (np == null) continue;
+
+                if (coveredPhones.contains(np)) {
+                    // Ya existe como cliente del bot — enriquecer
+                    for (ClienteDto existing : out) {
+                        String ep = existing.telefono != null
+                            ? PhoneNormalizer.normalize(existing.telefono) : null;
+                        if (np.equals(ep)) {
+                            existing.loyaltyEnrolled = true;
+                            existing.loyaltyCustomerHash = lc.getCustomerHash();
+                            // Si el cliente del bot no tenía email pero el loyalty sí, completar
+                            if ((existing.email == null || existing.email.isBlank()) && lc.getEmail() != null) {
+                                existing.email = lc.getEmail();
+                            }
+                            existing.source = "BOT_AND_MARKETING";
+                            break;
+                        }
+                    }
+                } else {
+                    // Marketing-only: agregar como cliente nuevo
+                    ClienteDto dto = new ClienteDto();
+                    dto.clienteKey = "loyalty:" + lc.getCustomerHash();
+                    dto.nombre = lc.getFirstName();
+                    dto.apellido = lc.getLastName();
+                    dto.email = lc.getEmail();
+                    dto.telefono = lc.getPhone();
+                    dto.reservasCount = 0;
+                    dto.conversacionesCount = 0;
+                    dto.firstSeenAt = lc.getEnrolledAt();
+                    dto.lastSeenAt = lc.getLastActivityAt() != null
+                        ? lc.getLastActivityAt() : lc.getEnrolledAt();
+                    dto.loyaltyEnrolled = true;
+                    dto.loyaltyCustomerHash = lc.getCustomerHash();
+                    dto.source = "MARKETING_ONLY";
+                    out.add(dto);
+                    coveredPhones.add(np);
+                }
+            }
+        } catch (Exception e) {
+            // Si Marketing falla por cualquier motivo, NO romper la vista Clientes.
+            log.warn("[Clientes] Error mergeando loyalty_customer: {}", e.getMessage());
         }
 
         // Ordenar por última actividad descendente (más reciente primero)
@@ -129,6 +205,36 @@ public class ClientesService {
     @Transactional(readOnly = true)
     public ClienteDetalleDto detail(String clienteKey) {
         if (clienteKey == null || clienteKey.isBlank()) return null;
+
+        // Si la key es de un cliente loyalty-only (sin reservas), buscar directo
+        if (clienteKey.startsWith("loyalty:")) {
+            String hash = clienteKey.substring("loyalty:".length());
+            return loyaltyRepo.findAll().stream()
+                    .filter(lc -> hash.equals(lc.getCustomerHash()))
+                    .findFirst()
+                    .map(lc -> {
+                        ClienteDetalleDto out = new ClienteDetalleDto();
+                        ClienteDto dto = new ClienteDto();
+                        dto.clienteKey = clienteKey;
+                        dto.nombre = lc.getFirstName();
+                        dto.apellido = lc.getLastName();
+                        dto.email = lc.getEmail();
+                        dto.telefono = lc.getPhone();
+                        dto.reservasCount = 0;
+                        dto.conversacionesCount = 0;
+                        dto.firstSeenAt = lc.getEnrolledAt();
+                        dto.lastSeenAt = lc.getLastActivityAt() != null
+                            ? lc.getLastActivityAt() : lc.getEnrolledAt();
+                        dto.loyaltyEnrolled = true;
+                        dto.loyaltyCustomerHash = lc.getCustomerHash();
+                        dto.source = "MARKETING_ONLY";
+                        out.cliente = dto;
+                        out.reservas = Collections.emptyList();
+                        out.conversaciones = Collections.emptyList();
+                        return out;
+                    })
+                    .orElse(null);
+        }
 
         List<BotTableRecord> reservations = loadAllReservations();
         List<ConversationLog> conversations = convRepo.findAll();
@@ -592,6 +698,18 @@ public class ClientesService {
         public String geoCiudad;              // "Pilar"
         public Integer mensajesPromedio;      // por conversación
         public Integer duracionPromedioMin;   // por conversación
+
+        /** Origen del cliente: "BOT" (solo bot), "MARKETING_ONLY" (solo módulo
+         *  Marketing, todavía no reservó), "BOT_AND_MARKETING" (las dos cosas).
+         *  El frontend muestra un badge según este valor. */
+        public String source;
+
+        /** True si el cliente está enrolado en el programa de fidelización. */
+        public boolean loyaltyEnrolled;
+
+        /** Hash del loyalty_customer (para linkear desde /admin al módulo
+         *  Marketing). Null si loyaltyEnrolled=false. */
+        public String loyaltyCustomerHash;
     }
 
     public static class StatsDto {

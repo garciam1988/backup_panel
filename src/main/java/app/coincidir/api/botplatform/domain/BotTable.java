@@ -96,6 +96,20 @@ public class BotTable {
     private String emailColumn;
 
     /**
+     * Nombre de la columna de la tabla que contiene el teléfono del cliente.
+     * Si está configurado, el módulo Marketing usa ese teléfono para
+     * crear/reactivar automáticamente un loyalty_customer cuando se inserta
+     * un nuevo record (vía BotRecordToLoyaltyListener).
+     *
+     * Si está vacío, la tabla NO participa de la sincronización con Marketing.
+     * El admin puede elegirlo desde /admin → bot_table → editar tabla.
+     *
+     * Ej: "telefono cliente", "phone", "celular".
+     */
+    @Column(name = "phone_column", length = 80)
+    private String phoneColumn;
+
+    /**
      * Nombre de la columna que contiene la fecha de referencia del recordatorio.
      * Debe ser de tipo "date" o "datetime". Si está vacío, los recordatorios
      * automáticos están deshabilitados para esta tabla (aunque el template
