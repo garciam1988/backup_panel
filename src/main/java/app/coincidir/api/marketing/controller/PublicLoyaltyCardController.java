@@ -190,8 +190,12 @@ public class PublicLoyaltyCardController {
      *
      * Si el hash no existe, devolvemos 404 (igual que la card view).
      */
-    @GetMapping(value = "/card/{customerHash}/manifest.json", produces = "application/manifest+json")
-    public ResponseEntity<?> getManifest(@PathVariable String customerHash) {
+    @GetMapping(value = "/card/{customerHash}/manifest.json")
+    public ResponseEntity<?> getManifest(
+        @PathVariable String customerHash,
+        @RequestHeader(value = "Origin", required = false) String originHeader,
+        @RequestHeader(value = "Referer", required = false) String refererHeader
+    ) {
         return customerService.findByHash(customerHash).map(cust -> {
             LoyaltyProgram program = programService.getActiveProgram();
 
@@ -201,6 +205,16 @@ public class PublicLoyaltyCardController {
             String themeColor = "#1D3557";
             String backgroundColor = "#FFFFFF";
             String logoUrl = null;
+
+            // Determinar el origen del FRONTEND que llamó. Como backend y frontend
+            // están en dominios distintos en Railway, necesitamos que las URLs
+            // del manifest (start_url, scope) apunten al frontend para que la
+            // PWA se instale "como app del frontend". Si tomáramos URLs relativas,
+            // se instalaría como app del backend (api.xxx.railway.app) que no
+            // tiene UI.
+            //
+            // Orden de preferencia: Origin > Referer > fallback hardcoded.
+            String frontendOrigin = resolveFrontendOrigin(originHeader, refererHeader);
 
             // Parseamos cardDesignJson si está presente
             try {
@@ -250,13 +264,13 @@ public class PublicLoyaltyCardController {
                 ));
             } else {
                 icons.add(Map.of(
-                    "src", "/icon-192.png",
+                    "src", frontendOrigin + "/icon-192.png",
                     "sizes", "192x192",
                     "type", "image/png",
                     "purpose", "any maskable"
                 ));
                 icons.add(Map.of(
-                    "src", "/icon-512.png",
+                    "src", frontendOrigin + "/icon-512.png",
                     "sizes", "512x512",
                     "type", "image/png",
                     "purpose", "any maskable"
@@ -267,8 +281,10 @@ public class PublicLoyaltyCardController {
             manifest.put("name", name);
             manifest.put("short_name", shortName);
             manifest.put("description", "Tarjeta de fidelización digital");
-            manifest.put("start_url", "/c/" + customerHash);
-            manifest.put("scope", "/c/");
+            // start_url y scope son URLs ABSOLUTAS al frontend (no relativas)
+            // para que la PWA quede asociada al dominio del frontend (no al backend).
+            manifest.put("start_url", frontendOrigin + "/c/" + customerHash);
+            manifest.put("scope", frontendOrigin + "/c/");
             manifest.put("display", "standalone");
             manifest.put("orientation", "portrait");
             manifest.put("background_color", backgroundColor);
@@ -279,8 +295,41 @@ public class PublicLoyaltyCardController {
             return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/manifest+json"))
                 .header("Cache-Control", "public, max-age=300") // 5min — refresco rápido si cambian branding
+                .header("Access-Control-Allow-Origin", frontendOrigin) // CORS: el manifest se carga desde frontend
                 .body((Object) manifest);
         }).orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Determina el origen del frontend que está pidiendo el manifest.
+     * Orden: Origin > Referer > fallback razonable.
+     *
+     * Devuelve algo como "https://bot-testing-def4.up.railway.app" sin el path.
+     */
+    private String resolveFrontendOrigin(String originHeader, String refererHeader) {
+        // 1) Header Origin (presente en CORS)
+        if (originHeader != null && !originHeader.isBlank() && !originHeader.equals("null")) {
+            return originHeader.trim();
+        }
+        // 2) Header Referer — parsear solo scheme+host
+        if (refererHeader != null && !refererHeader.isBlank()) {
+            try {
+                java.net.URI uri = java.net.URI.create(refererHeader.trim());
+                if (uri.getScheme() != null && uri.getHost() != null) {
+                    String origin = uri.getScheme() + "://" + uri.getHost();
+                    if (uri.getPort() > 0 && uri.getPort() != 80 && uri.getPort() != 443) {
+                        origin += ":" + uri.getPort();
+                    }
+                    return origin;
+                }
+            } catch (Exception e) {
+                log.warn("[Manifest] Referer header inválido: {}", refererHeader);
+            }
+        }
+        // 3) Fallback: vacío → start_url queda relativo. NO ideal, pero al menos
+        //    el manifest se sirve. En producción real, definir un property
+        //    "marketing.frontend-url" para casos sin Origin/Referer.
+        return "";
     }
 
     /** Acorta nombre largo para short_name (max 12 chars recomendado por W3C). */
