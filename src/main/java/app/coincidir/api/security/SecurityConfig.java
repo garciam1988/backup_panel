@@ -83,8 +83,12 @@ public class SecurityConfig {
                         // La PWA usa el customer_hash en la URL como bearer
                         // alternativo; no requiere JWT panel. Permitimos POST
                         // públicos sobre /api/public/loyalty/** (enroll,
-                        // redeem-request, push-subscription, etc).
+                        // redeem-request, push-subscription, etc) y sobre
+                        // /api/public/loyalty-tools/** (tools que el bot
+                        // conversacional consume, mismo patrón que
+                        // /api/public/bot-table-tools y /api/public/bot-api-tools).
                         .requestMatchers("/api/public/loyalty/**").permitAll()
+                        .requestMatchers("/api/public/loyalty-tools/**").permitAll()
 
                         // swaggerr
                         .requestMatchers(

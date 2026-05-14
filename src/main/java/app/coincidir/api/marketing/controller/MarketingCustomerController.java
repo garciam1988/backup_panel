@@ -31,6 +31,7 @@ public class MarketingCustomerController {
     private final LoyaltyCustomerService customerService;
     private final LoyaltyCardService cardService;
     private final LoyaltyTransactionService transactionService;
+    private final app.coincidir.api.marketing.repository.NotificationLogRepository notificationLogRepo;
 
     @GetMapping
     public Map<String, Object> list(@RequestParam(value = "q", required = false) String q,
@@ -74,6 +75,98 @@ public class MarketingCustomerController {
                 null,
                 res.alreadyExisted()
             ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Ajuste manual del balance del cliente (admin only). Permite sumar O restar
+     * estampillas/puntos/cashback con un motivo obligatorio.
+     *
+     * Body:
+     *   { "stampsDelta": 1, "pointsDelta": -50, "cashbackDelta": 0, "notes": "..." }
+     *
+     * Deltas positivos = sumar. Deltas negativos = restar. Al menos uno debe ser != 0.
+     * `notes` es obligatorio para que quede trazabilidad de por qué el admin ajustó.
+     *
+     * Crea una LoyaltyTransaction con transaction_type='adjustment' y source='admin_manual'.
+     * El historial queda inmutable: si se quiere revertir, se hace OTRO ajuste inverso.
+     */
+    @PostMapping("/{id}/adjust")
+    public ResponseEntity<?> adjust(@PathVariable Long id,
+                                    @RequestBody AdjustRequest req,
+                                    org.springframework.security.core.Authentication auth) {
+        if (req == null) return ResponseEntity.badRequest().body(Map.of("error", "Body requerido"));
+        if (req.notes() == null || req.notes().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "El motivo (notes) es obligatorio para ajustes manuales"));
+        }
+        int s = req.stampsDelta() == null ? 0 : req.stampsDelta();
+        int p = req.pointsDelta() == null ? 0 : req.pointsDelta();
+        java.math.BigDecimal c = req.cashbackDelta() == null ? java.math.BigDecimal.ZERO : req.cashbackDelta();
+        if (s == 0 && p == 0 && c.signum() == 0) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Al menos un delta debe ser distinto de cero"));
+        }
+        if (customerService.findById(id).isEmpty()) {
+            return ResponseEntity.status(404).body(Map.of("error", "Cliente no encontrado"));
+        }
+        String performedBy = auth != null ? auth.getName() : "admin";
+        try {
+            var result = transactionService.record(new LoyaltyTransactionService.RecordInput(
+                id, "adjustment", s, p, c, null, null, null, null, null, null, null,
+                "admin_manual", performedBy, req.notes().trim()
+            ));
+            return ResponseEntity.ok(Map.of(
+                "transactionId", result.transaction().getId(),
+                "card", CardDto.fromEntity(result.card())
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    public record AdjustRequest(
+        Integer stampsDelta,
+        Integer pointsDelta,
+        java.math.BigDecimal cashbackDelta,
+        String notes
+    ) {}
+
+    /**
+     * Lista las últimas comunicaciones enviadas a un cliente (WhatsApp, email,
+     * push). Útil para la pestaña "Comunicaciones" del detalle del cliente.
+     *
+     * Devuelve hasta 50 logs ordenados por queuedAt desc.
+     */
+    @GetMapping("/{id}/notifications")
+    public ResponseEntity<?> notifications(@PathVariable Long id) {
+        if (customerService.findById(id).isEmpty()) {
+            return ResponseEntity.status(404).body(Map.of("error", "Cliente no encontrado"));
+        }
+        var page = notificationLogRepo.findByCustomerIdOrderByQueuedAtDesc(
+            id, org.springframework.data.domain.PageRequest.of(0, 50));
+        return ResponseEntity.ok(page.getContent());
+    }
+
+    /**
+     * Toggle de preferencias de comunicación de un cliente (los 3 canales).
+     * Body: { "acceptsWhatsapp": true/false, "acceptsEmail": true/false, "acceptsPush": true/false }
+     * Permite mandar solo los flags que querés cambiar.
+     */
+    @PutMapping("/{id}/preferences")
+    public ResponseEntity<?> updatePreferences(@PathVariable Long id, @RequestBody Map<String, Boolean> body) {
+        var custOpt = customerService.findById(id);
+        if (custOpt.isEmpty()) {
+            return ResponseEntity.status(404).body(Map.of("error", "Cliente no encontrado"));
+        }
+        try {
+            var updated = customerService.updateCommunicationPrefs(
+                custOpt.get().getCustomerHash(),
+                body.get("acceptsWhatsapp"),
+                body.get("acceptsEmail"),
+                body.get("acceptsPush")
+            );
+            return ResponseEntity.ok(CustomerDto.fromEntity(updated));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

@@ -137,6 +137,23 @@
       <artifactId>openpdf</artifactId>
       <version>1.3.35</version>
     </dependency>
+
+    <!-- Web Push: notificaciones push estándar W3C con VAPID.
+         Implementación propia (sin lib externa) para evitar conflictos de
+         dependencias transitivas. Solo necesitamos BouncyCastle para
+         operaciones de la curva elíptica P-256 (la JDK no expone fácil
+         las curvas con nombre). Todo lo demás (JWT, cifrado AES-GCM,
+         HKDF, HTTP) usa APIs nativas de Java 17+:
+           - java.security.* (firma ECDSA)
+           - javax.crypto.* (AES-GCM, HKDF via Mac/HMACSHA256)
+           - java.net.http.HttpClient (HTTP/2 nativo)
+         Docs Web Push: RFC 8030 (protocolo), RFC 8291 (cifrado),
+                        RFC 8292 (VAPID). -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>1.78.1</version>
+    </dependency>
   </dependencies>
   <build>
     <plugins>

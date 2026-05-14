@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -54,6 +55,15 @@ public class CouponService {
     public Optional<Coupon> findById(Long id)  { return couponRepo.findById(id); }
     public Optional<Coupon> findByCode(String code) { return couponRepo.findByCode(code); }
 
+    /**
+     * Lista cupones activos ahora mismo (active=true + dentro de la ventana
+     * validFrom/validUntil + sin agotar). Usado por la PWA pública del cliente
+     * para mostrarle qué códigos puede mostrar al mozo en el local.
+     */
+    public List<Coupon> listActiveNow() {
+        return couponRepo.findActiveAt(java.time.Instant.now());
+    }
+
     @Transactional
     public Coupon create(Coupon c) {
         if (c.getCode() == null || c.getCode().isBlank())
@@ -63,6 +73,17 @@ public class CouponService {
             throw new IllegalArgumentException("Ya existe un cupón con ese código");
         if (c.getDiscountType() == null)
             throw new IllegalArgumentException("discountType es requerido");
+
+        // Defaults defensivos: las columnas NOT NULL tienen defaults a nivel
+        // de campo Java, pero si el cliente manda explícitamente null en el
+        // JSON, Jackson los pisa con null y JPA explota al insertar. Acá
+        // restauramos los valores razonables si llegaron como null.
+        if (c.getUsageType() == null)           c.setUsageType(Coupon.UsageType.MULTI_USE_PER_CUSTOMER);
+        if (c.getMaxUsesPerCustomer() == null)  c.setMaxUsesPerCustomer(1);
+        if (c.getCurrentUses() == null)         c.setCurrentUses(0);
+        if (c.getSource() == null)              c.setSource(Coupon.Source.MANUAL);
+        if (c.getActive() == null)              c.setActive(true);
+
         return couponRepo.save(c);
     }
 

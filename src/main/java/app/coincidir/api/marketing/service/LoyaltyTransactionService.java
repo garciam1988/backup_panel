@@ -50,6 +50,7 @@ public class LoyaltyTransactionService {
     private final LoyaltyCustomerRepository customerRepo;
     private final LoyaltyProgramService programService;
     private final LoyaltyCustomerService customerService;
+    private final EarnRuleEvaluator earnRuleEvaluator;
 
     /**
      * Registra un movimiento sobre la tarjeta del cliente.
@@ -105,6 +106,39 @@ public class LoyaltyTransactionService {
             throw new IllegalArgumentException("La transacción no tiene deltas para aplicar");
         }
 
+        // ── Aplicar reglas dinámicas (Bloque 8) ────────────────────────────
+        // Solo evaluamos reglas para earns (no para refund/adjust/redeem que
+        // tienen lógica propia). Determinamos el trigger por el tipo de tx:
+        //   earn_* via purchase → trigger="purchase"
+        //   earn_* manual (sin purchaseAmount) → trigger="manual"
+        // Los trigger="enrollment" y "birthday" los dispara un job aparte, no
+        // pasan por este método.
+        String appliedRulesJson = in.appliedRulesJson();
+        if (in.transactionType() != null && in.transactionType().startsWith("earn_")) {
+            String ruleTrigger = in.purchaseAmount() != null ? "purchase" : "manual";
+            var ctx = new EarnRuleEvaluator.EarnContext(
+                customer.getId(),
+                in.purchaseAmount(),
+                in.branchId(),
+                ruleTrigger,
+                Instant.now()
+            );
+            var eval = earnRuleEvaluator.evaluate(ctx, stampsDelta, pointsDelta, cashbackDelta);
+            if (!eval.isEmpty()) {
+                stampsDelta   = stampsDelta + eval.stamps();
+                pointsDelta   = pointsDelta + eval.points();
+                cashbackDelta = cashbackDelta.add(eval.cashback());
+                // Si el caller ya pasó appliedRulesJson, lo respetamos. Si no,
+                // generamos uno con las reglas que matchearon acá.
+                if (appliedRulesJson == null) {
+                    appliedRulesJson = earnRuleEvaluator.serializeApplied(eval.appliedRules());
+                }
+                log.info("Reglas dinámicas aplicadas a customer={}: Δstamps={} Δpoints={} Δcashback={} reglas={}",
+                    customer.getId(), eval.stamps(), eval.points(), eval.cashback(),
+                    eval.appliedRules().size());
+            }
+        }
+
         // Crear la transaction (audit log)
         LoyaltyTransaction tx = new LoyaltyTransaction();
         tx.setCustomerId(customer.getId());
@@ -119,7 +153,7 @@ public class LoyaltyTransactionService {
         tx.setReservationRecordId(in.reservationRecordId());
         tx.setRewardId(in.rewardId());
         tx.setRedemptionId(in.redemptionId());
-        tx.setAppliedRulesJson(in.appliedRulesJson());
+        tx.setAppliedRulesJson(appliedRulesJson);
         tx.setSource(in.source() != null ? in.source() : "system");
         tx.setPerformedBy(in.performedBy());
         tx.setNotes(in.notes());

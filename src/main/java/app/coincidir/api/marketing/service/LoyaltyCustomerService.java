@@ -2,12 +2,14 @@ package app.coincidir.api.marketing.service;
 
 import app.coincidir.api.marketing.domain.LoyaltyCard;
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
+import app.coincidir.api.marketing.event.CustomerEnrolledEvent;
 import app.coincidir.api.marketing.repository.LoyaltyCardRepository;
 import app.coincidir.api.marketing.repository.LoyaltyCustomerRepository;
 import app.coincidir.api.marketing.util.CustomerHashGenerator;
 import app.coincidir.api.marketing.util.PhoneNormalizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -39,6 +41,7 @@ public class LoyaltyCustomerService {
     private final LoyaltyCustomerRepository customerRepo;
     private final LoyaltyCardRepository cardRepo;
     private final LoyaltyProgramService programService;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
     public EnrollResult enrollOrReactivate(EnrollInput in) {
@@ -81,6 +84,17 @@ public class LoyaltyCustomerService {
         LoyaltyCard card = ensureCard(saved);
         log.info("Enrolado nuevo loyalty_customer id={} phone={} source={}",
             saved.getId(), saved.getPhone(), saved.getEnrolledSource());
+
+        // Disparar evento de enrolamiento. EarnBonusService lo escucha para
+        // evaluar reglas con trigger="enrollment" y crear bonus si aplica.
+        // Usamos eventos en vez de inyección directa para evitar acoplamiento
+        // y poder sumar más reacciones a futuro.
+        try {
+            eventPublisher.publishEvent(new CustomerEnrolledEvent(saved));
+        } catch (Exception e) {
+            log.warn("Error publicando CustomerEnrolledEvent: {}", e.getMessage());
+        }
+
         return new EnrollResult(saved, card, false);
     }
 

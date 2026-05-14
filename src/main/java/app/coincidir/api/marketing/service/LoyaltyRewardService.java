@@ -72,6 +72,9 @@ public class LoyaltyRewardService {
         if (r.getStockTotal() != null && r.getStockRemaining() == null) {
             r.setStockRemaining(r.getStockTotal());
         }
+        // Defaults defensivos contra nulls explícitos del JSON.
+        if (r.getActive() == null)       r.setActive(true);
+        if (r.getDisplayOrder() == null) r.setDisplayOrder(0);
         return rewardRepo.save(r);
     }
 

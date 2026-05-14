@@ -61,6 +61,25 @@ coincidir:
   pexels-key:       ${PEXELS_API_KEY:}
   elevenlabs-key:   ${ELEVENLABS_API_KEY:}
 
+  # ─── Twilio (WhatsApp Business para módulo Marketing) ──────────────────
+  # En local podés usar el sandbox de Twilio gratis. Para que el sandbox
+  # funcione, el cliente debe haber enviado el código "join <words>" al
+  # número sandbox antes. Si no tenés Twilio, dejá vacío y los WhatsApp
+  # quedan en QUEUED sin error.
+  twilio:
+    account-sid:   ${TWILIO_ACCOUNT_SID:}
+    auth-token:    ${TWILIO_AUTH_TOKEN:}
+    whatsapp-from: ${TWILIO_WHATSAPP_FROM:}
+
+  # ─── Web Push (VAPID) ──────────────────────────────────────────────────
+  # Generá tus claves UNA vez con GET /api/admin/marketing/vapid/generate
+  # (endpoint solo accesible en dev) y pegá los valores acá o en env vars.
+  # Si dejás vacío, el módulo sigue funcionando — los pushes quedan QUEUED.
+  vapid:
+    public-key:  ${VAPID_PUBLIC_KEY:}
+    private-key: ${VAPID_PRIVATE_KEY:}
+    subject:     ${VAPID_SUBJECT:mailto:dev@localhost}
+
   # ─── DIOS: en local, default permite arrancar sin laburo de configurar.
   # ⚠️ Esta password es solo para tu dev local. En producción NUNCA usar.
   dios:

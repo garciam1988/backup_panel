@@ -68,6 +68,7 @@ public class MarketingSegmentService {
         if (s.getCriteriaJson() == null || s.getCriteriaJson().isBlank())
             throw new IllegalArgumentException("criteria_json es requerido");
         validateCriteriaJson(s.getCriteriaJson());
+        if (s.getActive() == null) s.setActive(true);
         return segmentRepo.save(s);
     }
 

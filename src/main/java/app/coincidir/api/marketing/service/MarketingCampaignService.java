@@ -74,6 +74,13 @@ public class MarketingCampaignService {
             throw new IllegalArgumentException("channels_json es requerido");
         if (c.getStatus() == null) c.setStatus(MarketingCampaign.Status.DRAFT);
         if (c.getScheduleType() == null) c.setScheduleType(MarketingCampaign.ScheduleType.IMMEDIATE);
+        // Defaults defensivos: counters NOT NULL.
+        if (c.getTotalTargeted() == null)  c.setTotalTargeted(0);
+        if (c.getTotalSent() == null)      c.setTotalSent(0);
+        if (c.getTotalDelivered() == null) c.setTotalDelivered(0);
+        if (c.getTotalOpened() == null)    c.setTotalOpened(0);
+        if (c.getTotalClicked() == null)   c.setTotalClicked(0);
+        if (c.getTotalConverted() == null) c.setTotalConverted(0);
         return campaignRepo.save(c);
     }
 

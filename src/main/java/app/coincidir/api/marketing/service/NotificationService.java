@@ -43,6 +43,9 @@ public class NotificationService {
     private final NotificationLogRepository logRepo;
     private final LoyaltyCustomerRepository customerRepo;
     private final JavaMailSender mailSender;
+    private final TwilioWhatsAppService twilioService;
+    private final EmailTemplateService emailTemplateService;
+    private final WebPushService webPushService;
 
     @Value("${spring.mail.username:noreply@coincidir.app}")
     private String mailFrom;
@@ -50,13 +53,52 @@ public class NotificationService {
     // ── EMAIL ────────────────────────────────────────────────────────────
 
     /**
-     * Envía un email transaccional/automatización al cliente. Si el cliente
-     * tiene accepts_email=false, NO se envía y devuelve null. El consentimiento
-     * es responsabilidad del caller; acá garantizamos no enviar contra preferencia.
+     * Envía un email transaccional simple. El htmlBody se manda TAL CUAL,
+     * sin envolver en plantilla. Útil para emails internos / transaccionales
+     * que no necesitan branding (ej: confirmación de enrolamiento).
+     *
+     * Si necesitás un email con header de marca + CTA + cupón, usá
+     * {@link #sendEmailWithTemplate} en su lugar.
+     *
+     * Si accepts_email=false, NO se envía y devuelve null.
      */
     @Transactional
     public NotificationLog sendEmail(NotificationLog.SourceType sourceType, String sourceRef,
                                      Long customerId, String subject, String htmlBody) {
+        return doSendEmail(sourceType, sourceRef, customerId, subject, htmlBody);
+    }
+
+    /**
+     * Envía un email envuelto en la plantilla profesional del módulo Marketing:
+     * header con logo + brand name + secondaryColor, saludo personalizado,
+     * cuerpo HTML, botón CTA opcional, caja de cupón opcional, footer.
+     *
+     * Lo que `bodyHtml` debería tener es solo el mensaje del operador (el
+     * texto entre saludo y CTA). El resto lo arma EmailTemplateService.
+     *
+     * @param bodyHtml    HTML del mensaje (sin <html>, sin <body>)
+     * @param ctaUrl      URL del botón "Ver más" (null → sin botón)
+     * @param coupon      cupón asociado (null → sin caja de cupón)
+     */
+    @Transactional
+    public NotificationLog sendEmailWithTemplate(NotificationLog.SourceType sourceType, String sourceRef,
+                                                 Long customerId, String subject, String bodyHtml,
+                                                 String ctaUrl,
+                                                 app.coincidir.api.marketing.domain.Coupon coupon) {
+        LoyaltyCustomer customer = customerRepo.findById(customerId).orElse(null);
+        if (customer == null) return null;
+        if (customer.getEmail() == null || customer.getEmail().isBlank()) return null;
+        if (!Boolean.TRUE.equals(customer.getAcceptsEmail())) {
+            log.debug("Saltando email (template) a customer={} (accepts_email=false)", customerId);
+            return null;
+        }
+        String fullHtml = emailTemplateService.render(customer, bodyHtml, ctaUrl, coupon);
+        return doSendEmail(sourceType, sourceRef, customerId, subject, fullHtml);
+    }
+
+    /** Implementación común del envío SMTP. */
+    private NotificationLog doSendEmail(NotificationLog.SourceType sourceType, String sourceRef,
+                                        Long customerId, String subject, String htmlBody) {
         LoyaltyCustomer customer = customerRepo.findById(customerId).orElse(null);
         if (customer == null) return null;
         if (customer.getEmail() == null || customer.getEmail().isBlank()) return null;
@@ -92,8 +134,15 @@ public class NotificationService {
     // ── WHATSAPP ─────────────────────────────────────────────────────────
 
     /**
-     * Encola un mensaje de WhatsApp. El envío real lo hace el bot Node.js
-     * (vía Twilio) en el Bloque 7. Por ahora dejamos el registro en QUEUED.
+     * Envía un WhatsApp al cliente vía Twilio. Si Twilio no está configurado,
+     * el log queda en QUEUED con un mensaje indicando la razón (para que el
+     * operador pueda investigar). Si Twilio responde con error 4xx/5xx, queda
+     * FAILED con el mensaje devuelto por Twilio (típicamente: "fuera de
+     * ventana de 24h", "número no es WhatsApp válido", etc).
+     *
+     * Respeta accepts_whatsapp del cliente — si está false, no envía y
+     * devuelve null sin loguear (es responsabilidad del caller filtrar
+     * contra preferencias).
      */
     @Transactional
     public NotificationLog queueWhatsapp(NotificationLog.SourceType sourceType, String sourceRef,
@@ -108,15 +157,46 @@ public class NotificationService {
 
         NotificationLog n = newLog(sourceType, sourceRef, customerId,
             NotificationLog.Channel.WHATSAPP, null, body, null);
-        n.setStatus(NotificationLog.Status.QUEUED);
         n.setProvider("twilio");
+
+        // Si Twilio no está configurado, dejamos QUEUED y registramos el motivo
+        // en error_message para que sea visible. Esto permite a entornos sin
+        // Twilio seguir funcionando sin romper el flujo del módulo.
+        if (!twilioService.isConfigured()) {
+            n.setStatus(NotificationLog.Status.QUEUED);
+            n.setErrorMessage("Twilio no configurado (faltan TWILIO_ACCOUNT_SID/AUTH_TOKEN/WHATSAPP_FROM)");
+            log.info("WhatsApp queued (Twilio no configurado) → customer={}", customerId);
+            return logRepo.save(n);
+        }
+
+        // Twilio configurado: enviamos en el momento. El dispatcher batchea de
+        // a 50 y este sender es cheap (1 HTTP request), así que no hay riesgo
+        // de bloquear la transacción.
+        TwilioWhatsAppService.Result result = twilioService.send(customer.getPhone(), body);
+        if (result.accepted()) {
+            n.setStatus(NotificationLog.Status.SENT);
+            n.setProviderMessageId(result.messageSid());
+            n.setSentAt(Instant.now());
+        } else {
+            n.setStatus(NotificationLog.Status.FAILED);
+            n.setErrorMessage(result.errorReason());
+        }
         return logRepo.save(n);
     }
 
     // ── WEB PUSH ─────────────────────────────────────────────────────────
 
     /**
-     * Encola un Web Push. Envío real en Bloque 7 (con VAPID + web-push lib).
+     * Envía un Web Push al cliente. La PWA del cliente tuvo que haber
+     * registrado su subscription previamente vía POST /push-subscription.
+     *
+     * Si VAPID no está configurado en el servidor, el log queda en QUEUED
+     * con el motivo. Si la subscription expiró (HTTP 410 / 404 del Push
+     * Service), borramos la subscription del customer y marcamos FAILED.
+     * Si el Push Service responde otro error, también FAILED con el motivo.
+     *
+     * Respeta accepts_push del cliente — si está false, no envía y devuelve
+     * null sin loguear.
      */
     @Transactional
     public NotificationLog queueWebPush(NotificationLog.SourceType sourceType, String sourceRef,
@@ -129,12 +209,56 @@ public class NotificationService {
             return null;
         }
 
+        // Payload que recibe el Service Worker en el evento 'push'.
+        // El SW lo parsea y muestra la notificación nativa.
+        String payloadJson = buildPushPayload(title, body, url);
+
         NotificationLog n = newLog(sourceType, sourceRef, customerId,
-            NotificationLog.Channel.WEB_PUSH, title, body,
-            "{\"url\":\"" + (url == null ? "" : url.replace("\"", "\\\"")) + "\"}");
-        n.setStatus(NotificationLog.Status.QUEUED);
+            NotificationLog.Channel.WEB_PUSH, title, body, payloadJson);
         n.setProvider("webpush");
+
+        if (!webPushService.isConfigured()) {
+            n.setStatus(NotificationLog.Status.QUEUED);
+            n.setErrorMessage("Web Push no configurado (faltan VAPID_PUBLIC_KEY/PRIVATE_KEY)");
+            log.info("Web Push queued (VAPID no configurado) → customer={}", customerId);
+            return logRepo.save(n);
+        }
+
+        WebPushService.Result result = webPushService.send(customer.getWebPushSubscription(), payloadJson);
+        if (result.accepted()) {
+            n.setStatus(NotificationLog.Status.SENT);
+            n.setSentAt(Instant.now());
+        } else {
+            n.setStatus(NotificationLog.Status.FAILED);
+            n.setErrorMessage(result.errorReason());
+            // Si la subscription expiró, la limpiamos del customer para no
+            // seguir intentando enviarle.
+            if (result.expired()) {
+                log.info("Subscription expirada para customer={}, limpiando", customerId);
+                customer.setWebPushSubscription(null);
+                customerRepo.save(customer);
+            }
+        }
         return logRepo.save(n);
+    }
+
+    /** Arma el payload JSON que va a leer el Service Worker. */
+    private String buildPushPayload(String title, String body, String url) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append('{');
+        sb.append("\"title\":\"").append(jsonEscape(title)).append("\",");
+        sb.append("\"body\":\"").append(jsonEscape(body)).append("\"");
+        if (url != null && !url.isBlank()) {
+            sb.append(",\"url\":\"").append(jsonEscape(url)).append("\"");
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private String jsonEscape(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
     }
 
     private NotificationLog newLog(NotificationLog.SourceType sourceType, String sourceRef,

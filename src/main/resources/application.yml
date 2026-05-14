@@ -61,6 +61,27 @@ coincidir:
   pexels-key:       ${PEXELS_API_KEY:}
   elevenlabs-key:   ${ELEVENLABS_API_KEY:}
 
+  # ─── Twilio para WhatsApp Business (módulo Marketing) ──────────────────
+  # Si las 3 vars están seteadas, el NotificationDispatcherJob manda
+  # WhatsApp real. Si alguna falta, los mensajes quedan en QUEUED con
+  # un log explicando que falta credencial. Cuenta Twilio gratis: 15 USD
+  # de crédito. Más info: https://www.twilio.com/docs/whatsapp
+  twilio:
+    account-sid:   ${TWILIO_ACCOUNT_SID:}
+    auth-token:    ${TWILIO_AUTH_TOKEN:}
+    whatsapp-from: ${TWILIO_WHATSAPP_FROM:}
+
+  # ─── Web Push (VAPID) para módulo Marketing ────────────────────────────
+  # Las claves VAPID identifican al servidor frente al Push Service de cada
+  # navegador (Google, Mozilla, Apple). Se generan UNA sola vez con el
+  # endpoint GET /api/admin/marketing/vapid/generate (solo accesible en
+  # desarrollo). El "subject" debe ser un mailto: o URL del operador.
+  # Si las 3 vars no están, el envío real queda en QUEUED.
+  vapid:
+    public-key:  ${VAPID_PUBLIC_KEY:}
+    private-key: ${VAPID_PRIVATE_KEY:}
+    subject:     ${VAPID_SUBJECT:mailto:info@coincidir.app}
+
   # ─── Credenciales del super-admin DIOS (env-only, sin default) ──────────
   # Configurá estas en Railway > Variables. Username puede tener default
   # ('dios') porque no es sensible — la password obviamente no.

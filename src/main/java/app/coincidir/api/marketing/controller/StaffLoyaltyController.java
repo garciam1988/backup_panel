@@ -8,9 +8,11 @@ import app.coincidir.api.marketing.dto.MarketingDtos.EarnRequest;
 import app.coincidir.api.marketing.dto.MarketingDtos.EarnResponse;
 import app.coincidir.api.marketing.dto.MarketingDtos.ValidateRedemptionRequest;
 import app.coincidir.api.marketing.service.CouponService;
+import app.coincidir.api.marketing.service.LoyaltyCardService;
 import app.coincidir.api.marketing.service.LoyaltyCustomerService;
 import app.coincidir.api.marketing.service.LoyaltyRedemptionService;
 import app.coincidir.api.marketing.service.LoyaltyTransactionService;
+import app.coincidir.api.marketing.dto.MarketingDtos.CustomerDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -36,6 +38,7 @@ import java.util.Map;
 public class StaffLoyaltyController {
 
     private final LoyaltyCustomerService customerService;
+    private final LoyaltyCardService cardService;
     private final LoyaltyTransactionService transactionService;
     private final LoyaltyRedemptionService redemptionService;
     private final CouponService couponService;
@@ -151,6 +154,14 @@ public class StaffLoyaltyController {
         ));
     }
 
+    /**
+     * Búsqueda de cliente para el panel del mozo. Acepta customer_hash o
+     * teléfono. Devuelve el cliente + su card actual (balances) para que
+     * el panel pueda mostrar el saldo directamente sin un segundo request.
+     *
+     * Shape de respuesta:
+     *   { customer: CustomerDto, card: CardDto }
+     */
     @GetMapping("/lookup")
     public ResponseEntity<?> lookup(@RequestParam(value = "hash", required = false) String hash,
                                     @RequestParam(value = "phone", required = false) String phone) {
@@ -159,12 +170,10 @@ public class StaffLoyaltyController {
         else if (phone != null && !phone.isBlank()) c = customerService.findByPhone(phone).orElse(null);
         if (c == null) return ResponseEntity.notFound().build();
 
+        var card = cardService.getOrCreate(c);
         return ResponseEntity.ok(Map.of(
-            "customerId", c.getId(),
-            "customerHash", c.getCustomerHash(),
-            "firstName", c.getFirstName(),
-            "lastName", c.getLastName() == null ? "" : c.getLastName(),
-            "phone", c.getPhone()
+            "customer", CustomerDto.fromEntity(c),
+            "card", CardDto.fromEntity(card)
         ));
     }
 }

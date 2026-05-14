@@ -371,4 +371,55 @@ public class MarketingDtos {
         BigDecimal discountApplied,
         String reasonIfRejected
     ) {}
+
+    // ── EARN RULE (Bloque 8) ────────────────────────────────────────────
+
+    public record EarnRuleDto(
+        Long id,
+        Long programId,
+        String name,
+        String description,
+        app.coincidir.api.marketing.domain.LoyaltyEarnRule.RuleType ruleType,
+        app.coincidir.api.marketing.domain.LoyaltyEarnRule.Target target,
+        BigDecimal multiplierValue,
+        Integer bonusStamps,
+        Integer bonusPoints,
+        BigDecimal bonusCashback,
+        String conditionsJson,
+        Integer priority,
+        Instant validFrom,
+        Instant validUntil,
+        Boolean active,
+        Instant createdAt,
+        Instant updatedAt
+    ) {
+        public static EarnRuleDto fromEntity(app.coincidir.api.marketing.domain.LoyaltyEarnRule r) {
+            return new EarnRuleDto(r.getId(), r.getProgramId(), r.getName(), r.getDescription(),
+                r.getRuleType(), r.getTarget(), r.getMultiplierValue(),
+                r.getBonusStamps(), r.getBonusPoints(), r.getBonusCashback(),
+                r.getConditionsJson(), r.getPriority(),
+                r.getValidFrom(), r.getValidUntil(), r.getActive(),
+                r.getCreatedAt(), r.getUpdatedAt());
+        }
+
+        public app.coincidir.api.marketing.domain.LoyaltyEarnRule toEntity() {
+            var r = new app.coincidir.api.marketing.domain.LoyaltyEarnRule();
+            r.setId(id);
+            r.setProgramId(programId);
+            r.setName(name);
+            r.setDescription(description);
+            r.setRuleType(ruleType);
+            r.setTarget(target);
+            r.setMultiplierValue(multiplierValue);
+            r.setBonusStamps(bonusStamps);
+            r.setBonusPoints(bonusPoints);
+            r.setBonusCashback(bonusCashback);
+            r.setConditionsJson(conditionsJson);
+            r.setPriority(priority);
+            r.setValidFrom(validFrom);
+            r.setValidUntil(validUntil);
+            r.setActive(active);
+            return r;
+        }
+    }
 }
