@@ -60,6 +60,19 @@ public class PublicLoyaltyCardController {
     private final WebPushService webPushService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * URL base del frontend de la PWA. Se usa como fallback en el manifest
+     * cuando no llega header Origin/Referer (ej. cuando abrís el endpoint
+     * directo en el navegador para debuggear). En operación normal, el
+     * Referer del browser apunta al frontend y este valor no se usa.
+     *
+     * Configurable vía env var MARKETING_FRONTEND_URL en Railway.
+     * Si no se configura, el manifest puede quedar con URLs relativas que
+     * Chrome puede rechazar al instalar la PWA.
+     */
+    @org.springframework.beans.factory.annotation.Value("${marketing.frontend-url:}")
+    private String configuredFrontendUrl;
+
     @GetMapping("/card/{customerHash}")
     public ResponseEntity<?> getCard(@PathVariable String customerHash) {
         return customerService.findByHash(customerHash).map(cust -> {
@@ -302,7 +315,7 @@ public class PublicLoyaltyCardController {
 
     /**
      * Determina el origen del frontend que está pidiendo el manifest.
-     * Orden: Origin > Referer > fallback razonable.
+     * Orden: Origin > Referer > MARKETING_FRONTEND_URL env > vacío.
      *
      * Devuelve algo como "https://bot-testing-def4.up.railway.app" sin el path.
      */
@@ -326,9 +339,17 @@ public class PublicLoyaltyCardController {
                 log.warn("[Manifest] Referer header inválido: {}", refererHeader);
             }
         }
-        // 3) Fallback: vacío → start_url queda relativo. NO ideal, pero al menos
-        //    el manifest se sirve. En producción real, definir un property
-        //    "marketing.frontend-url" para casos sin Origin/Referer.
+        // 3) Fallback: env var MARKETING_FRONTEND_URL configurada en Railway.
+        //    Útil para debug (abrir el endpoint directo) y para casos edge
+        //    donde el browser no manda Origin ni Referer.
+        if (configuredFrontendUrl != null && !configuredFrontendUrl.isBlank()) {
+            String trimmed = configuredFrontendUrl.trim();
+            // Quitar trailing slash si lo tiene
+            if (trimmed.endsWith("/")) trimmed = trimmed.substring(0, trimmed.length() - 1);
+            return trimmed;
+        }
+        // 4) Último recurso: cadena vacía. start_url quedaría relativo, lo
+        //    que puede romper la instalación de la PWA en Chrome moderno.
         return "";
     }
 
