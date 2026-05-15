@@ -90,6 +90,15 @@ public class SecurityConfig {
                         .requestMatchers("/api/public/loyalty/**").permitAll()
                         .requestMatchers("/api/public/loyalty-tools/**").permitAll()
 
+                        // ── Staff App (mozos / cajeros operando en el local) ──
+                        // El login con PIN es público; el resto requiere JWT
+                        // staff (mismo filtro, ver JwtAuthFilter). Las reglas
+                        // de autorización por rol no se aplican acá; quedan a
+                        // nivel de service (StaffLoyaltyController valida el
+                        // staff_user_id del JWT al operar).
+                        .requestMatchers(HttpMethod.POST, "/api/staff-app/auth/login").permitAll()
+                        .requestMatchers("/api/staff-app/**").authenticated()
+
                         // swaggerr
                         .requestMatchers(
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html"
