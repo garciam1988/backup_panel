@@ -307,21 +307,36 @@ public class BotTableEmailService {
             return table.getName() != null ? table.getName() : "";
         }
         if ("_logoUrl".equals(key)) {
-            // URL pública al logo del cliente. Sirve el endpoint /api/public/
-            // loyalty/brand-logo que decodifica el data URL guardado en
-            // bot_config.logoUrl y lo entrega como imagen real.
+            // Estrategia: si en bot_config hay un data URL (base64), lo
+            // devolvemos directo. Gmail, Outlook y Apple Mail soportan
+            // data URLs en <img src>. Es el approach más portable: no
+            // depende de env vars, dominios ni CORS, y el cliente de
+            // email NO necesita hacer una request HTTP externa para
+            // mostrar el logo (mejor privacidad y entrega más confiable).
             //
-            // Usar esto en lugar de pegar el data URL directo en el HTML del
-            // email evita inflar el peso del mensaje (data URLs son
-            // base64 -> 33% más grandes que el binario).
+            // Si bot_config tiene una URL externa (http(s)://...), la
+            // devolvemos tal cual (caso histórico).
+            //
+            // Si no hay logo, devolvemos string vacío (la imagen no se
+            // renderiza, pero el HTML no rompe).
+            try {
+                var cfg = botConfigRepository.findById(1L).orElse(null);
+                if (cfg != null && cfg.getLogoUrl() != null && !cfg.getLogoUrl().isBlank()) {
+                    String logo = cfg.getLogoUrl();
+                    // Data URL embebido — Gmail/Outlook lo soportan
+                    if (logo.startsWith("data:")) return logo;
+                    // URL externa http(s)://
+                    if (logo.startsWith("http://") || logo.startsWith("https://")) return logo;
+                }
+            } catch (Exception e) {
+                log.debug("No pudimos leer bot_config.logoUrl para _logoUrl: {}", e.getMessage());
+            }
+            // Fallback: si tenemos api-base-url, construimos URL del endpoint
+            // del backend (que decodifica el data URL y lo sirve como bytes).
             if (apiBaseUrl != null && !apiBaseUrl.isBlank()) {
                 return apiBaseUrl.replaceAll("/+$", "") + "/api/public/loyalty/brand-logo";
             }
-            // Sin api-base-url configurada, devolvemos el path relativo. Los
-            // clientes de email NO resuelven paths relativos contra ningún
-            // dominio, así que no se va a renderizar — pero al menos no
-            // rompe el HTML.
-            return "/api/public/loyalty/brand-logo";
+            return "";
         }
         if ("_date".equals(key)) {
             return LocalDateTime.now(ZoneId.systemDefault())
