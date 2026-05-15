@@ -24,7 +24,7 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
   mail:
-    host: ${SMTP_HOST:mail.yes-traveluy.com}
+    host: ${SMTP_HOST:wo51.wiroos.host}
     port: ${SMTP_PORT:465}
     username: ${SMTP_USER:info@yes-traveluy.com}
     password: ${SMTP_PASS:YesTravel26}
@@ -33,7 +33,7 @@ spring:
       mail.smtp.ssl.enable: true
       mail.smtp.starttls.enable: false
       mail.smtp.starttls.required: false
-      mail.smtp.ssl.trust: mail.yes-traveluy.com
+      mail.smtp.ssl.trust: wo51.wiroos.host
 
 management:
   endpoints:
