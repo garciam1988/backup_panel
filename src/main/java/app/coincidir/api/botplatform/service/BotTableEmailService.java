@@ -7,6 +7,7 @@ import app.coincidir.api.botplatform.domain.EmailTemplate;
 import app.coincidir.api.botplatform.repository.EmailLogRepository;
 import app.coincidir.api.botplatform.repository.EmailReminderSentRepository;
 import app.coincidir.api.botplatform.repository.EmailTemplateRepository;
+import app.coincidir.api.repository.BotConfigRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.mail.internet.MimeMessage;
@@ -58,7 +59,17 @@ public class BotTableEmailService {
     private final EmailLogRepository logRepo;
     private final EmailReminderSentRepository reminderRepo;
     private final JavaMailSender mailSender;
+    private final BotConfigRepository botConfigRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * URL base pública del backend. Se usa para construir la URL del logo
+     * que se inserta en los emails como {{_logoUrl}}. Si no está configurada,
+     * intenta inferir desde la request (no aplica acá porque @Async no tiene
+     * request scope), o usa un fallback razonable.
+     */
+    @Value("${coincidir.api-base-url:}")
+    private String apiBaseUrl;
 
     /**
      * Self-injection (lazy para evitar ciclo en construcción) — necesario para
@@ -251,12 +262,21 @@ public class BotTableEmailService {
         while (m.find()) {
             String key = m.group(1).trim();
             String value = resolvePlaceholder(key, data, table);
-            // Escape minimal para HTML (<, >, &) — los emails son HTML
-            value = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+            // URLs no se escapan como HTML (sino "&" se vuelve "&amp;" y rompe
+            // querystrings). Los demás placeholders sí se escapan para evitar
+            // que un dato del usuario (ej. "<script>") se ejecute en el HTML.
+            if (!isUrlPlaceholder(key)) {
+                value = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+            }
             m.appendReplacement(out, Matcher.quoteReplacement(value));
         }
         m.appendTail(out);
         return out.toString();
+    }
+
+    /** Placeholders que devuelven URLs y por lo tanto NO deben escaparse como HTML. */
+    private static boolean isUrlPlaceholder(String key) {
+        return "_logoUrl".equals(key);
     }
 
     private String resolvePlaceholder(String key, JsonNode data, BotTable table) {
@@ -268,6 +288,40 @@ public class BotTableEmailService {
             // Usa el name del bot como fallback. Para versión más completa podríamos
             // inyectar el BotConfig pero por ahora con table.name alcanza.
             return table.getName() != null ? table.getName() : "";
+        }
+        if ("_brandName".equals(key)) {
+            // Nombre comercial del cliente (Brasas Argentinas, Mikhuna Nikkei).
+            // Sale del bot_config.brandName (singleton id=1). Fallback al
+            // botName si no está seteado.
+            try {
+                var cfg = botConfigRepository.findById(1L).orElse(null);
+                if (cfg != null && cfg.getBrandName() != null && !cfg.getBrandName().isBlank()) {
+                    return cfg.getBrandName();
+                }
+                if (cfg != null && cfg.getBotName() != null && !cfg.getBotName().isBlank()) {
+                    return cfg.getBotName();
+                }
+            } catch (Exception e) {
+                log.debug("No pudimos leer bot_config para _brandName: {}", e.getMessage());
+            }
+            return table.getName() != null ? table.getName() : "";
+        }
+        if ("_logoUrl".equals(key)) {
+            // URL pública al logo del cliente. Sirve el endpoint /api/public/
+            // loyalty/brand-logo que decodifica el data URL guardado en
+            // bot_config.logoUrl y lo entrega como imagen real.
+            //
+            // Usar esto en lugar de pegar el data URL directo en el HTML del
+            // email evita inflar el peso del mensaje (data URLs son
+            // base64 -> 33% más grandes que el binario).
+            if (apiBaseUrl != null && !apiBaseUrl.isBlank()) {
+                return apiBaseUrl.replaceAll("/+$", "") + "/api/public/loyalty/brand-logo";
+            }
+            // Sin api-base-url configurada, devolvemos el path relativo. Los
+            // clientes de email NO resuelven paths relativos contra ningún
+            // dominio, así que no se va a renderizar — pero al menos no
+            // rompe el HTML.
+            return "/api/public/loyalty/brand-logo";
         }
         if ("_date".equals(key)) {
             return LocalDateTime.now(ZoneId.systemDefault())
