@@ -62,8 +62,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             // Si ya hay auth en el contexto (ej: otro filtro), no la pisamos
             if (SecurityContextHolder.getContext().getAuthentication() == null && subject != null) {
+                // Subject "staff:{id}" → es un JWT emitido por StaffAppController
+                // tras login con PIN. No tiene PanelUser asociado: lo dejamos
+                // pasar autenticado con su rol STAFF para que pueda operar en
+                // los endpoints /api/staff-app/**.
+                if (subject.startsWith("staff:")) {
+                    Authentication auth = buildAuth(subject, role != null ? role : "STAFF");
+                    SecurityContextHolder.getContext().setAuthentication(auth);
+                }
                 // Sólo PanelUser. UserAccount tiene sus propios flujos de auth.
-                if (panelUserRepo.findByUsername(subject).isPresent()) {
+                else if (panelUserRepo.findByUsername(subject).isPresent()) {
                     Authentication auth = buildAuth(subject, role);
                     SecurityContextHolder.getContext().setAuthentication(auth);
                 }
