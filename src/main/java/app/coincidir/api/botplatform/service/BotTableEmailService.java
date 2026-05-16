@@ -222,11 +222,7 @@ public class BotTableEmailService {
         // 7) Construir y enviar
         try {
             MimeMessage msg = mailSender.createMimeMessage();
-            // Detectamos si el body referencia "cid:logo" (placeholder
-            // {{_logoUrl}}). Si sí, necesitamos un MimeMessage multipart
-            // para poder adjuntar el logo como inline. Si no, modo simple.
-            boolean useInlineLogo = body != null && body.contains("cid:logo");
-            MimeMessageHelper h = new MimeMessageHelper(msg, useInlineLogo, "UTF-8");
+            MimeMessageHelper h = new MimeMessageHelper(msg, false, "UTF-8");
 
             // From: si el template tiene fromDisplayName, usamos eso con el email default.
             //   "Brasas Argentinas <info@yes-traveluy.com>"
@@ -246,21 +242,6 @@ public class BotTableEmailService {
 
             h.setSubject(subject);
             h.setText(body, true);
-
-            // Adjuntar logo como inline attachment con Content-ID "logo".
-            // El HTML del body lo referencia con <img src="cid:logo">.
-            // Esto es la forma estándar de embeber imágenes en emails
-            // y funciona en TODOS los clientes (Gmail, Outlook, etc.).
-            if (useInlineLogo) {
-                try {
-                    attachInlineLogo(h);
-                } catch (Exception logoEx) {
-                    // No abortamos el envío por un error de logo — solo loggeamos.
-                    // El email sale con la imagen rota pero llega.
-                    log.warn("[BotTableEmail] no pude adjuntar logo inline: {}", logoEx.getMessage());
-                }
-            }
-
             mailSender.send(msg);
             writeLog(table, record, tpl, event, recipient, true, null);
             log.info("[BotTableEmail] enviado: tabla={} record={} evento={} a={}",
@@ -270,60 +251,6 @@ public class BotTableEmailService {
             String detail = ex.getMessage() + (cause.isEmpty() ? "" : " | " + cause);
             writeLog(table, record, tpl, event, recipient, false, detail);
             log.warn("[BotTableEmail] fallo envío a {}: {}", recipient, detail);
-        }
-    }
-
-    /**
-     * Adjunta el logo del bot_config como inline attachment con Content-ID "logo".
-     * Soporta data URLs base64 (lo más común) y URLs http(s) externas.
-     *
-     * El <img src="cid:logo"> en el HTML se renderiza con esta imagen en
-     * todos los clientes de email.
-     */
-    private void attachInlineLogo(MimeMessageHelper h) throws Exception {
-        var cfg = botConfigRepository.findById(1L).orElse(null);
-        if (cfg == null || cfg.getLogoUrl() == null || cfg.getLogoUrl().isBlank()) return;
-        String logo = cfg.getLogoUrl();
-
-        if (logo.startsWith("data:")) {
-            // Decodificar data URL base64
-            int commaIdx = logo.indexOf(",");
-            if (commaIdx < 0) return;
-            String header = logo.substring(0, commaIdx);
-            String payload = logo.substring(commaIdx + 1);
-            String contentType = "image/png";
-            int semicolonIdx = header.indexOf(";");
-            if (semicolonIdx > 5) {
-                contentType = header.substring(5, semicolonIdx);
-            }
-            byte[] bytes = java.util.Base64.getDecoder().decode(payload);
-            // Adjuntar como inline con CID "logo"
-            org.springframework.core.io.ByteArrayResource resource =
-                new org.springframework.core.io.ByteArrayResource(bytes) {
-                    @Override public String getFilename() { return "logo"; }
-                };
-            h.addInline("logo", resource, contentType);
-        } else if (logo.startsWith("http://") || logo.startsWith("https://")) {
-            // URL externa: bajamos los bytes y adjuntamos como inline.
-            try (java.io.InputStream in = new java.net.URL(logo).openStream();
-                 java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream()) {
-                byte[] buf = new byte[4096];
-                int n;
-                while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
-                byte[] bytes = baos.toByteArray();
-                // Inferir content type del extension (rudimentario)
-                String contentType = "image/png";
-                String lower = logo.toLowerCase();
-                if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) contentType = "image/jpeg";
-                else if (lower.endsWith(".gif")) contentType = "image/gif";
-                else if (lower.endsWith(".webp")) contentType = "image/webp";
-                else if (lower.endsWith(".svg")) contentType = "image/svg+xml";
-                org.springframework.core.io.ByteArrayResource resource =
-                    new org.springframework.core.io.ByteArrayResource(bytes) {
-                        @Override public String getFilename() { return "logo"; }
-                    };
-                h.addInline("logo", resource, contentType);
-            }
         }
     }
 
@@ -380,28 +307,34 @@ public class BotTableEmailService {
             return table.getName() != null ? table.getName() : "";
         }
         if ("_logoUrl".equals(key)) {
-            // Estrategia: devolvemos "cid:logo" (Content-ID reference).
-            // En el momento del envío, el método sendInternal detecta este
-            // marker en el HTML del body y adjunta el logo del bot_config
-            // como inline attachment con Content-ID "logo".
+            // Estrategia: si en bot_config hay un data URL (base64), lo
+            // devolvemos directo. Gmail, Outlook y Apple Mail soportan
+            // data URLs en <img src>. Es el approach más portable: no
+            // depende de env vars, dominios ni CORS, y el cliente de
+            // email NO necesita hacer una request HTTP externa para
+            // mostrar el logo (mejor privacidad y entrega más confiable).
             //
-            // Esta es la forma profesional de embeber imágenes en emails
-            // y funciona en TODOS los clientes (Gmail, Outlook desktop,
-            // Outlook web, Apple Mail, Thunderbird, mobile). A diferencia
-            // de data URLs que Gmail bloquea silenciosamente cuando son
-            // grandes, o de URLs externas que pueden no ser confiables
-            // para el cliente de email.
+            // Si bot_config tiene una URL externa (http(s)://...), la
+            // devolvemos tal cual (caso histórico).
             //
-            // Si bot_config.logoUrl está vacío, mandamos string vacío y
-            // el <img src=""> simplemente no muestra nada (sin imagen
-            // rota visible en la mayoría de los clientes).
+            // Si no hay logo, devolvemos string vacío (la imagen no se
+            // renderiza, pero el HTML no rompe).
             try {
                 var cfg = botConfigRepository.findById(1L).orElse(null);
                 if (cfg != null && cfg.getLogoUrl() != null && !cfg.getLogoUrl().isBlank()) {
-                    return "cid:logo";
+                    String logo = cfg.getLogoUrl();
+                    // Data URL embebido — Gmail/Outlook lo soportan
+                    if (logo.startsWith("data:")) return logo;
+                    // URL externa http(s)://
+                    if (logo.startsWith("http://") || logo.startsWith("https://")) return logo;
                 }
             } catch (Exception e) {
-                log.debug("No pudimos leer bot_config.logoUrl: {}", e.getMessage());
+                log.debug("No pudimos leer bot_config.logoUrl para _logoUrl: {}", e.getMessage());
+            }
+            // Fallback: si tenemos api-base-url, construimos URL del endpoint
+            // del backend (que decodifica el data URL y lo sirve como bytes).
+            if (apiBaseUrl != null && !apiBaseUrl.isBlank()) {
+                return apiBaseUrl.replaceAll("/+$", "") + "/api/public/loyalty/brand-logo";
             }
             return "";
         }
@@ -503,8 +436,7 @@ public class BotTableEmailService {
 
         try {
             MimeMessage msg = mailSender.createMimeMessage();
-            boolean useInlineLogo = body != null && body.contains("cid:logo");
-            MimeMessageHelper h = new MimeMessageHelper(msg, useInlineLogo, "UTF-8");
+            MimeMessageHelper h = new MimeMessageHelper(msg, false, "UTF-8");
 
             String from = defaultMailFrom;
             if (tpl.getFromDisplayName() != null && !tpl.getFromDisplayName().isBlank()) {
@@ -522,14 +454,6 @@ public class BotTableEmailService {
             // distinga el mail real de los de prueba en su casilla.
             h.setSubject("[TEST] " + subject);
             h.setText(body, true);
-
-            if (useInlineLogo) {
-                try { attachInlineLogo(h); }
-                catch (Exception logoEx) {
-                    log.warn("[BotTableEmail TEST] no pude adjuntar logo inline: {}", logoEx.getMessage());
-                }
-            }
-
             mailSender.send(msg);
             writeLog(table, record, tpl, "test", recipient, true, null);
             log.info("[BotTableEmail] TEST enviado: tabla={} a={}", table.getSlug(), recipient);

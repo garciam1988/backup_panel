@@ -71,8 +71,9 @@ public class TableDescriptionAiService {
 
     private static final String ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
     private static final String HAIKU_MODEL = "claude-haiku-4-5-20251001";
-    private static final int MAX_TABLES_PER_BATCH = 25;
-    private static final int SAMPLE_ROWS = 5;
+    private static final String HAIKU_FALLBACK_MODEL = "claude-3-5-haiku-20241022";
+    private static final int MAX_TABLES_PER_BATCH = 5;   // ↓ desde 25: con 25 el response superaba max_tokens y devolvía JSON cortado → parseo fallaba → 0 descripciones
+    private static final int SAMPLE_ROWS = 3;            // ↓ desde 5: ídem, prompt más corto
 
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -107,18 +108,14 @@ public class TableDescriptionAiService {
             return result;
         }
 
-        // Normalizar nombres
+        // Normalizar nombres (lower, sin vacíos, sin duplicados)
         List<String> normalized = new ArrayList<>();
         for (String t : tableNames) {
             if (t == null) continue;
             String trimmed = t.trim().toLowerCase(Locale.ROOT);
-            if (!trimmed.isEmpty()) normalized.add(trimmed);
+            if (!trimmed.isEmpty() && !normalized.contains(trimmed)) normalized.add(trimmed);
         }
         if (normalized.isEmpty()) return result;
-        if (normalized.size() > MAX_TABLES_PER_BATCH) {
-            log.warn("[ai-desc] batch excede {} tablas — truncando", MAX_TABLES_PER_BATCH);
-            normalized = normalized.subList(0, MAX_TABLES_PER_BATCH);
-        }
 
         // Parsear schema cacheado a estructura accesible
         Map<String, Map<String, Object>> schemaByTable;
@@ -129,40 +126,57 @@ public class TableDescriptionAiService {
             return result;
         }
 
-        // Traer muestras desde la BD del cliente
         DataSource ds = dataSourceService.getDataSource(connector);
-        List<Map<String, Object>> tablesPayload = new ArrayList<>();
-        for (String table : normalized) {
-            Map<String, Object> schema = schemaByTable.get(table.toLowerCase(Locale.ROOT));
-            if (schema == null) {
-                log.info("[ai-desc] tabla {} no está en schema cacheado, skip", table);
+
+        log.info("[ai-desc] connector={} solicitadas={} batchSize={} samplesPorTabla={}",
+                connectorId, normalized.size(), MAX_TABLES_PER_BATCH, SAMPLE_ROWS);
+
+        // Procesar en batches chicos. Si un batch falla, los demás siguen.
+        int batchNum = 0;
+        for (int i = 0; i < normalized.size(); i += MAX_TABLES_PER_BATCH) {
+            batchNum++;
+            int end = Math.min(i + MAX_TABLES_PER_BATCH, normalized.size());
+            List<String> batch = normalized.subList(i, end);
+
+            List<Map<String, Object>> tablesPayload = new ArrayList<>();
+            for (String table : batch) {
+                Map<String, Object> schema = schemaByTable.get(table.toLowerCase(Locale.ROOT));
+                if (schema == null) {
+                    log.info("[ai-desc] tabla '{}' no está en schema cacheado, skip", table);
+                    continue;
+                }
+                List<Map<String, Object>> sample = fetchSample(ds, table, connector);
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("name", table);
+                entry.put("columns", schema.get("columns"));
+                entry.put("foreignKeys", schema.getOrDefault("foreignKeys", List.of()));
+                entry.put("sampleRows", sample);
+                tablesPayload.add(entry);
+            }
+            if (tablesPayload.isEmpty()) {
+                log.info("[ai-desc] batch {} sin tablas válidas, skip", batchNum);
                 continue;
             }
-            List<Map<String, Object>> sample = fetchSample(ds, table, connector);
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("name", table);
-            entry.put("columns", schema.get("columns"));
-            entry.put("foreignKeys", schema.getOrDefault("foreignKeys", List.of()));
-            entry.put("sampleRows", sample);
-            tablesPayload.add(entry);
-        }
-        if (tablesPayload.isEmpty()) return result;
 
-        // Llamar a Claude
-        try {
-            Map<String, String> aiResponses = callClaude(connector, tablesPayload);
-            // Normalizar las keys de Claude a lower también (por si las devuelve con casing distinto)
-            for (Map.Entry<String, String> e : aiResponses.entrySet()) {
-                String key = e.getKey() == null ? "" : e.getKey().toLowerCase(Locale.ROOT);
-                String val = e.getValue() == null ? "" : e.getValue().trim();
-                if (!key.isEmpty() && !val.isEmpty()) {
-                    result.put(key, val);
+            try {
+                Map<String, String> aiResponses = callClaude(connector, tablesPayload);
+                int before = result.size();
+                for (Map.Entry<String, String> e : aiResponses.entrySet()) {
+                    String key = e.getKey() == null ? "" : e.getKey().toLowerCase(Locale.ROOT);
+                    String val = e.getValue() == null ? "" : e.getValue().trim();
+                    if (!key.isEmpty() && !val.isEmpty()) {
+                        result.put(key, val);
+                    }
                 }
+                log.info("[ai-desc] batch {}/{}: tablasEnPayload={} respondidasPorClaude={} acumuladasTotal={}",
+                        batchNum, (int) Math.ceil(normalized.size() / (double) MAX_TABLES_PER_BATCH),
+                        tablesPayload.size(), aiResponses.size(), result.size() - before + before);
+            } catch (Exception e) {
+                log.warn("[ai-desc] batch {} falló (sigue con el resto): {}", batchNum, e.getMessage(), e);
             }
-        } catch (Exception e) {
-            log.warn("[ai-desc] llamada a Claude falló: {}", e.getMessage());
-            // result puede estar parcialmente vacío — está bien
         }
+
+        log.info("[ai-desc] terminado. solicitadas={} generadas={}", normalized.size(), result.size());
         return result;
     }
 
@@ -218,10 +232,7 @@ public class TableDescriptionAiService {
                     Map<String, Object> row = new LinkedHashMap<>();
                     for (int i = 1; i <= cols; i++) {
                         Object v = rs.getObject(i);
-                        // Truncar valores muy largos para no inflar el prompt
-                        if (v instanceof String s && s.length() > 200) {
-                            v = s.substring(0, 200) + "…";
-                        }
+                        v = normalizeForJson(v);
                         row.put(meta.getColumnLabel(i), v);
                     }
                     rows.add(row);
@@ -231,6 +242,24 @@ public class TableDescriptionAiService {
             log.warn("[ai-desc] no pude traer muestra de '{}': {}", tableName, e.getMessage());
         }
         return rows;
+    }
+
+    /**
+     * Convierte valores que Jackson no serializa por default (LocalDateTime,
+     * Instant, java.sql.Date, byte[], etc.) a tipos amigables (String).
+     */
+    private static Object normalizeForJson(Object v) {
+        if (v == null) return null;
+        if (v instanceof String s) {
+            return s.length() > 200 ? s.substring(0, 200) + "…" : s;
+        }
+        if (v instanceof java.time.temporal.Temporal) return v.toString();
+        if (v instanceof java.util.Date d) return d.toInstant().toString();
+        if (v instanceof java.sql.Timestamp t) return t.toInstant().toString();
+        if (v instanceof java.sql.Date d) return d.toString();
+        if (v instanceof java.sql.Time t) return t.toString();
+        if (v instanceof byte[] bs) return "<bytes len=" + bs.length + ">";
+        return v;
     }
 
     /** Quoting básico para evitar conflictos con palabras reservadas. */
@@ -277,28 +306,34 @@ public class TableDescriptionAiService {
         userPrompt.append("\n\nRespondé SOLO con un JSON de este formato exacto, sin markdown ni texto adicional:\n");
         userPrompt.append("{\"descriptions\":[{\"name\":\"nombre_tabla\",\"description\":\"descripción aquí\"}]}\n");
 
-        ObjectNode body = jsonMapper.createObjectNode();
-        body.put("model", HAIKU_MODEL);
-        body.put("max_tokens", 4096);
-        ArrayNode messages = body.putArray("messages");
-        ObjectNode msg = messages.addObject();
-        msg.put("role", "user");
-        msg.put("content", userPrompt.toString());
-
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(ANTHROPIC_URL))
-                .header("x-api-key", anthropicKey)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .timeout(Duration.ofSeconds(60))
-                .POST(HttpRequest.BodyPublishers.ofString(jsonMapper.writeValueAsString(body)))
-                .build();
-
-        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() / 100 != 2) {
-            throw new RuntimeException("Anthropic " + resp.statusCode() + ": " + resp.body());
+        // Intentar con el modelo principal; si tira 404 (modelo deprecado/cambió nombre),
+        // reintentar con el fallback. Cualquier otro error se propaga.
+        HttpResponse<String> resp;
+        try {
+            resp = sendAnthropic(HAIKU_MODEL, userPrompt.toString());
+            if (resp.statusCode() == 404) {
+                log.warn("[ai-desc] modelo {} devolvió 404, fallback a {}", HAIKU_MODEL, HAIKU_FALLBACK_MODEL);
+                resp = sendAnthropic(HAIKU_FALLBACK_MODEL, userPrompt.toString());
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Error de red llamando a Anthropic: " + e.getMessage(), e);
         }
+
+        if (resp.statusCode() / 100 != 2) {
+            String body = resp.body();
+            String shortBody = body == null ? "" : (body.length() > 500 ? body.substring(0, 500) + "..." : body);
+            log.warn("[ai-desc] Anthropic respondió {} body={}", resp.statusCode(), shortBody);
+            throw new RuntimeException("Anthropic " + resp.statusCode() + ": " + shortBody);
+        }
+
         JsonNode root = jsonMapper.readTree(resp.body());
+
+        // Detectar si la respuesta se cortó (stop_reason = max_tokens) — eso suele
+        // dejar JSON truncado y rompe el parseo. Lo logueamos para diagnóstico.
+        String stopReason = root.path("stop_reason").asText("");
+        if ("max_tokens".equals(stopReason)) {
+            log.warn("[ai-desc] respuesta cortada por max_tokens — los últimos items pueden venir truncados");
+        }
 
         // Extraer el bloque de texto de la respuesta
         StringBuilder text = new StringBuilder();
@@ -321,18 +356,74 @@ public class TableDescriptionAiService {
             raw = raw.trim();
         }
 
-        // Parsear el JSON
-        JsonNode parsed = jsonMapper.readTree(raw);
-        JsonNode descs = parsed.path("descriptions");
+        // Parsear el JSON. Si está cortado, intentamos rescatar las descripciones
+        // completas que ya están en el array.
         Map<String, String> out = new LinkedHashMap<>();
-        if (descs.isArray()) {
-            for (JsonNode item : descs) {
-                String name = item.path("name").asText("").trim();
-                String desc = item.path("description").asText("").trim();
-                if (!name.isEmpty() && !desc.isEmpty()) {
-                    out.put(name, desc);
+        try {
+            JsonNode parsed = jsonMapper.readTree(raw);
+            JsonNode descs = parsed.path("descriptions");
+            if (descs.isArray()) {
+                for (JsonNode item : descs) {
+                    String name = item.path("name").asText("").trim();
+                    String desc = item.path("description").asText("").trim();
+                    if (!name.isEmpty() && !desc.isEmpty()) {
+                        out.put(name, desc);
+                    }
                 }
             }
+        } catch (Exception parseErr) {
+            // JSON corrupto. Mostramos el preview del raw y intentamos rescatar
+            // los objetos completos por regex (parser-fallback).
+            String preview = raw.length() > 400 ? raw.substring(0, 400) + "..." : raw;
+            log.warn("[ai-desc] no pude parsear JSON, intentando rescate. preview={}", preview);
+            out = rescueDescriptionsFromTruncatedJson(raw);
+        }
+        return out;
+    }
+
+    /** Envía un request a Anthropic con el modelo dado. Comparte timeouts/headers. */
+    private HttpResponse<String> sendAnthropic(String model, String userPromptText) throws Exception {
+        ObjectNode body = jsonMapper.createObjectNode();
+        body.put("model", model);
+        body.put("max_tokens", 8192);   // antes 4096; con batches chicos sigue holgado
+        ArrayNode messages = body.putArray("messages");
+        ObjectNode msg = messages.addObject();
+        msg.put("role", "user");
+        msg.put("content", userPromptText);
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(ANTHROPIC_URL))
+                .header("x-api-key", anthropicKey)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .timeout(Duration.ofSeconds(60))
+                .POST(HttpRequest.BodyPublishers.ofString(jsonMapper.writeValueAsString(body)))
+                .build();
+        return HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * Fallback parser: cuando el JSON viene cortado por max_tokens, lo recorremos
+     * a mano buscando objetos {"name":"...","description":"..."} completos.
+     * Devuelve un Map con todos los que matcheen.
+     */
+    private Map<String, String> rescueDescriptionsFromTruncatedJson(String raw) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (raw == null || raw.isBlank()) return out;
+        // Regex tolerante: name primero, description después, con espacios y escapes simples.
+        // No cubre todos los escapes JSON pero alcanza para descripciones razonables.
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "\\{\\s*\"name\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"description\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"\\s*\\}");
+        java.util.regex.Matcher m = p.matcher(raw);
+        while (m.find()) {
+            String name = m.group(1).trim().toLowerCase(Locale.ROOT);
+            String desc = m.group(2).trim().replace("\\\"", "\"");
+            if (!name.isEmpty() && !desc.isEmpty()) {
+                out.put(name, desc);
+            }
+        }
+        if (!out.isEmpty()) {
+            log.info("[ai-desc] rescue parser recuperó {} descripciones del JSON truncado", out.size());
         }
         return out;
     }

@@ -32,6 +32,17 @@ public class UserAccount {
     private Instant lastLoginAt;
 
     /**
+     * Flag para acceso al módulo /manager (ARViz / Jarvis).
+     *
+     * Independiente del role: cualquier user (SELLER, ADMIN, etc.) puede tener
+     * o no acceso al manager. Por defecto false. Se setea desde AdminPanel
+     * → Manager Section → "Usuarios autorizados".
+     */
+    @Column(name = "manager_access", nullable = false)
+    @lombok.Builder.Default
+    private Boolean managerAccess = Boolean.FALSE;
+
+    /**
      * Perfil extendido en formato JSON (flexible para el User Panel).
      * Se guarda como texto (LONGTEXT) para evitar cambios de esquema frecuentes.
      */

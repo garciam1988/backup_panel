@@ -114,6 +114,11 @@ public class SecurityConfig {
                         // Alias Admin Panel: requiere token para todo lo /api/web/admin/** excepto login.
                         .requestMatchers("/api/web/admin/**").authenticated()
 
+                        // Manager module (ARViz / Jarvis): requiere JWT.
+                        // El controller además valida user_account.manager_access=true.
+                        .requestMatchers("/api/manager/**").authenticated()
+                        .requestMatchers("/api/me/**").authenticated()
+
                         // el resto queda abierto como antes
                         .anyRequest().permitAll()
                 )
