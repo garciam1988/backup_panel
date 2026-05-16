@@ -25,11 +25,43 @@ import org.springframework.transaction.event.TransactionalEventListener;
  *    "nice to have".
  *  - Solo para enrolamientos NUEVOS (alreadyExisted=false). Si era un
  *    cliente que ya estaba, no le mandamos welcome.
+ *  - FILTRADO POR ORIGEN: solo se manda el welcome mail si el enrolamiento
+ *    vino de un flujo "directo" del cliente (típicamente /altacliente vía
+ *    QR, source="qr"). Cuando el bot crea una reserva, el side-effect de
+ *    enrolar al cliente NO debe mandar welcome — el cliente ya recibe el
+ *    mail de confirmación de la reserva y un segundo mail genera ruido y
+ *    parece spam. Ver SKIP_SOURCES abajo.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class EnrollmentWelcomeEmailListener {
+
+    /**
+     * Orígenes de enrolamiento para los que NO mandamos welcome mail.
+     * Estos representan flujos "indirectos" donde el cliente no inició una
+     * acción explícita de alta — el enrolamiento es un side-effect de otra
+     * cosa (reserva, migración masiva, etc.) y mandar un mail de bienvenida
+     * resulta confuso o spam.
+     *
+     *   - "bot-reservation": disparado por BotRecordToLoyaltyListener cuando
+     *     el bot inserta una reserva. El cliente ya recibe el mail de
+     *     confirmación de reserva; no duplicamos.
+     *   - "bot": tool enroll_customer ejecutada por el bot. Mismo criterio.
+     *   - "migration": job de backfill (MigrateBotClientsJob) que enrola
+     *     en masa a clientes que ya tenían reservas pre-existentes al
+     *     deploy del módulo Marketing. Mandar welcome retroactivamente
+     *     no tiene sentido.
+     *
+     * Cualquier otro source ("qr" del formulario público, "admin_manual"
+     * desde Marketing, o un null/vacío) SÍ recibe welcome. Si en el futuro
+     * aparece un nuevo flujo bot-like, sumarlo acá.
+     */
+    private static final java.util.Set<String> SKIP_SOURCES = java.util.Set.of(
+        "bot-reservation",
+        "bot",
+        "migration"
+    );
 
     private final NotificationService notificationService;
     private final LoyaltyProgramService programService;
@@ -44,6 +76,13 @@ public class EnrollmentWelcomeEmailListener {
         if (c == null) return;
         if (c.getEmail() == null || c.getEmail().isBlank()) {
             return; // No cargó email — nada que mandar.
+        }
+        // Filtro de origen: si el enrolamiento vino del bot o de una
+        // migración, no mandamos welcome (ver SKIP_SOURCES arriba).
+        String source = c.getEnrolledSource();
+        if (source != null && SKIP_SOURCES.contains(source)) {
+            log.debug("Welcome email skipped (source={}) customer_id={}", source, c.getId());
+            return;
         }
         try {
             LoyaltyProgram program = programService.getActiveProgram();
@@ -82,7 +121,7 @@ public class EnrollmentWelcomeEmailListener {
                 cardUrl,
                 null  // sin cupón
             );
-            log.info("Welcome email enviado a customer_id={} email={}", c.getId(), c.getEmail());
+            log.info("Welcome email enviado a customer_id={} email={} source={}", c.getId(), c.getEmail(), source);
         } catch (Exception e) {
             // No propagar: el cliente quedó enrolado igual, el email es opcional.
             log.warn("No se pudo mandar welcome email a customer_id={}: {}", c.getId(), e.getMessage());
