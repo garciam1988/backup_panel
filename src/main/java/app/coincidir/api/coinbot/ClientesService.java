@@ -61,7 +61,11 @@ public class ClientesService {
         List<ConversationLog> conversations = convRepo.findAll();
         List<BotTableRecord> reservations = loadAllReservations();
 
-        // Indexar reservas por clave de cliente para lookup rápido
+        // Indexar reservas por clave de cliente para lookup rápido.
+        // Cada reserva genera 1..N keys posibles (e:email, p:phone) — todas
+        // apuntan a la misma reserva. Después agrupamos por la key "canónica"
+        // de la reserva (la primera no-nula) para no duplicar entradas en la
+        // lista final.
         Map<String, List<ReservaInfo>> reservasByKey = new HashMap<>();
         for (BotTableRecord rec : reservations) {
             ReservaInfo info = parseReservaRecord(rec);
@@ -69,17 +73,24 @@ public class ClientesService {
             reservasByKey.computeIfAbsent(info.clienteKey, k -> new ArrayList<>()).add(info);
         }
 
-        // Agrupar conversaciones por clave de cliente
+        // Agrupar conversaciones por TODAS las keys candidatas (no solo una).
+        // Antes: una conversación con email+phone generaba SOLO la key con email,
+        // y se perdía el match con reservas que solo tenían phone. Ahora la
+        // misma conversación queda indexada bajo ambas claves, así puede
+        // emparejarse con cualquier reserva que comparta email O teléfono.
+        // El dedupe se hace al construir cada ClienteDto: se usa un Set<id>
+        // de conversación para no contar dos veces.
         Map<String, List<ConversationLog>> convsByKey = new HashMap<>();
         for (ConversationLog c : conversations) {
-            String key = buildClientKey(
+            List<String> keys = buildClientKeys(
                     c.getClientFirstName(),
                     c.getClientLastName(),
                     extractEmailFromExtra(c.getClientExtraJson()),
                     extractPhoneFromExtra(c.getClientExtraJson())
             );
-            if (key == null) continue;
-            convsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(c);
+            for (String key : keys) {
+                convsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(c);
+            }
         }
 
         // Construir DTO por cliente — primero los que tienen al menos 1 reserva real
@@ -95,7 +106,23 @@ public class ClientesService {
             processedKeys.add(key);
 
             List<ReservaInfo> reservas = e.getValue();
-            List<ConversationLog> convs = convsByKey.getOrDefault(key, Collections.emptyList());
+
+            // Para cada reserva, expandimos también todas las keys candidatas
+            // del cliente y juntamos conversaciones de TODAS ellas. Dedup por
+            // id de conversación.
+            Map<Long, ConversationLog> convsMap = new HashMap<>();
+            for (ReservaInfo r : reservas) {
+                List<String> rkeys = buildClientKeys(r.firstName, r.lastName, r.email, r.phone);
+                for (String rk : rkeys) {
+                    List<ConversationLog> list = convsByKey.get(rk);
+                    if (list == null) continue;
+                    for (ConversationLog cl : list) {
+                        convsMap.putIfAbsent(cl.getId(), cl);
+                    }
+                }
+            }
+            List<ConversationLog> convs = new ArrayList<>(convsMap.values());
+
             ClienteDto dto = buildClienteDto(key, convs, reservas);
             if (dto != null) {
                 dto.source = "BOT";  // tiene reserva real del bot
@@ -129,6 +156,7 @@ public class ClientesService {
                         if (np.equals(ep)) {
                             existing.loyaltyEnrolled = true;
                             existing.loyaltyCustomerHash = lc.getCustomerHash();
+                            existing.loyaltyEnrolledSource = lc.getEnrolledSource();
                             // Si el cliente del bot no tenía email pero el loyalty sí, completar
                             if ((existing.email == null || existing.email.isBlank()) && lc.getEmail() != null) {
                                 existing.email = lc.getEmail();
@@ -152,6 +180,7 @@ public class ClientesService {
                         ? lc.getLastActivityAt() : lc.getEnrolledAt();
                     dto.loyaltyEnrolled = true;
                     dto.loyaltyCustomerHash = lc.getCustomerHash();
+                    dto.loyaltyEnrolledSource = lc.getEnrolledSource();
                     dto.source = "MARKETING_ONLY";
                     out.add(dto);
                     coveredPhones.add(np);
@@ -227,6 +256,7 @@ public class ClientesService {
                             ? lc.getLastActivityAt() : lc.getEnrolledAt();
                         dto.loyaltyEnrolled = true;
                         dto.loyaltyCustomerHash = lc.getCustomerHash();
+                        dto.loyaltyEnrolledSource = lc.getEnrolledSource();
                         dto.source = "MARKETING_ONLY";
                         out.cliente = dto;
                         out.reservas = Collections.emptyList();
@@ -240,24 +270,42 @@ public class ClientesService {
         List<ConversationLog> conversations = convRepo.findAll();
 
         List<ReservaInfo> reservas = new ArrayList<>();
+        // Set de keys candidatas que pertenecen a este cliente — armado desde
+        // sus propias reservas, así una conversación que matchea por phone
+        // entra aunque la reserva primaria use la key de email (o viceversa).
+        Set<String> clientKeySet = new HashSet<>();
+        clientKeySet.add(clienteKey);
+
         for (BotTableRecord rec : reservations) {
             ReservaInfo info = parseReservaRecord(rec);
-            if (info != null && clienteKey.equals(info.clienteKey)) {
+            if (info == null) continue;
+            // Si la key principal coincide con la pedida, sumamos la reserva
+            // y agregamos sus otras keys candidatas al set.
+            if (clienteKey.equals(info.clienteKey)) {
                 reservas.add(info);
+                clientKeySet.addAll(buildClientKeys(info.firstName, info.lastName, info.email, info.phone));
             }
         }
         if (reservas.isEmpty()) return null;
 
-        List<ConversationLog> convs = new ArrayList<>();
+        // Buscar conversaciones que matcheen CUALQUIERA de las keys candidatas,
+        // deduplicando por id.
+        Map<Long, ConversationLog> convsMap = new HashMap<>();
         for (ConversationLog c : conversations) {
-            String key = buildClientKey(
+            List<String> ckeys = buildClientKeys(
                     c.getClientFirstName(),
                     c.getClientLastName(),
                     extractEmailFromExtra(c.getClientExtraJson()),
                     extractPhoneFromExtra(c.getClientExtraJson())
             );
-            if (clienteKey.equals(key)) convs.add(c);
+            for (String ck : ckeys) {
+                if (clientKeySet.contains(ck)) {
+                    convsMap.putIfAbsent(c.getId(), c);
+                    break;
+                }
+            }
         }
+        List<ConversationLog> convs = new ArrayList<>(convsMap.values());
 
         ClienteDto resumen = buildClienteDto(clienteKey, convs, reservas);
         if (resumen == null) return null;
@@ -488,10 +536,17 @@ public class ClientesService {
                     .average().orElse(0);
             dto.mensajesPromedio = (int) Math.round(avg);
 
-            // Duración promedio de charla en minutos
+            // Duración promedio de charla en minutos.
+            // Filtramos charlas con duración > 2 horas porque casi siempre son
+            // sesiones donde el cliente cerró sin avisar y el visitorId persistió
+            // hasta el timeout final (o sesiones viejas pre-fix con TTL 12h).
+            // Incluirlas distorsiona el promedio. 2h es un tope razonable: una
+            // reserva tomada con calma + algunas consultas raramente pasa de 30min.
+            final long MAX_REASONABLE_SEC = 2 * 60 * 60L; // 2 horas
             double avgDur = convs.stream()
                     .filter(c -> c.getStartedAt() != null && c.getEndedAt() != null)
                     .mapToLong(c -> Math.max(0, (c.getEndedAt().getEpochSecond() - c.getStartedAt().getEpochSecond())))
+                    .filter(s -> s <= MAX_REASONABLE_SEC)
                     .average().orElse(0);
             dto.duracionPromedioMin = (int) Math.round(avgDur / 60.0);
         }
@@ -536,6 +591,33 @@ public class ClientesService {
         else return null;
 
         return fn + "|" + ln + "|" + contact;
+    }
+
+    /**
+     * Variante de buildClientKey que devuelve TODAS las keys posibles para
+     * un cliente — una por email y otra por teléfono si tiene ambos.
+     *
+     * El problema que resuelve: si en una sesión el cliente da email, y en
+     * otra solo da teléfono, las dos reservas generaban keys distintas
+     * (`...|e:mail` vs `...|p:1234`) y las conversaciones quedaban
+     * desvinculadas en la vista Clientes. Indexar bajo todas las keys
+     * permite que cualquier match (email O teléfono) traiga la conversación
+     * o reserva correcta. El dedupe se hace por id en el caller.
+     *
+     * Si no tiene nombre+apellido, devuelve lista vacía (anónimo).
+     * Si no tiene ni email ni teléfono, devuelve lista vacía.
+     */
+    List<String> buildClientKeys(String firstName, String lastName, String email, String phone) {
+        String fn = norm(firstName);
+        String ln = norm(lastName);
+        if (fn.isEmpty() || ln.isEmpty()) return Collections.emptyList();
+
+        List<String> out = new ArrayList<>(2);
+        String em = norm(email);
+        String ph = normPhone(phone);
+        if (!em.isEmpty()) out.add(fn + "|" + ln + "|" + "e:" + em);
+        if (!ph.isEmpty()) out.add(fn + "|" + ln + "|" + "p:" + ph);
+        return out;
     }
 
     private String norm(String s) {
@@ -710,6 +792,15 @@ public class ClientesService {
         /** Hash del loyalty_customer (para linkear desde /admin al módulo
          *  Marketing). Null si loyaltyEnrolled=false. */
         public String loyaltyCustomerHash;
+
+        /** Origen del enrolamiento loyalty. Valores típicos:
+         *    - "bot-reservation" / "bot" / "migration" → vino del bot de Reservas
+         *    - "admin_manual"                          → creado a mano desde Marketing
+         *    - "qr"                                    → enrolado vía QR público
+         *    - null                                    → no es loyalty
+         *  El frontend traduce este valor a un label legible ("Reservas",
+         *  "Creado Manual", "QR"). */
+        public String loyaltyEnrolledSource;
     }
 
     public static class StatsDto {

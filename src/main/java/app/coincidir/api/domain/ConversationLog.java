@@ -100,9 +100,19 @@ public class ConversationLog {
     @Column(name = "message_count")
     private Integer messageCount;
 
-    /** timeout | beforeunload | manual */
+    /** tool_add_record | tool_update_record | tool_delete_record | timeout | beforeunload | manual | reservation_made | in_progress */
     @Column(name = "closed_reason", length = 40)
     private String closedReason;
+
+    /**
+     * Marca persistente: TRUE si en algún momento de la charla se ejecutó
+     * exitosamente una tool de escritura (add_record/update_record/delete_record).
+     * Sirve para que el motivo de cierre final (timeout / beforeunload) no
+     * pise la trazabilidad de "esta charla terminó en reserva". Una vez TRUE,
+     * el UPSERT NO baja a FALSE.
+     */
+    @Column(name = "had_reservation", nullable = false)
+    private Boolean hadReservation = Boolean.FALSE;
 
     /** true si no se pudo extraer nombre/apellido. */
     @Column(name = "is_anonymous", nullable = false)
@@ -124,5 +134,6 @@ public class ConversationLog {
         if (startedAt == null) startedAt = Instant.now();
         if (endedAt == null) endedAt = Instant.now();
         if (isAnonymous == null) isAnonymous = Boolean.TRUE;
+        if (hadReservation == null) hadReservation = Boolean.FALSE;
     }
 }

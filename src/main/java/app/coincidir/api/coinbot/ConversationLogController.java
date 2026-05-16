@@ -180,6 +180,7 @@ public class ConversationLogController {
         public Integer messageCount;
         public String closedReason;
         public Boolean isAnonymous;
+        public Boolean hadReservation;
         public Instant startedAt;
         public Instant endedAt;
 
@@ -199,6 +200,7 @@ public class ConversationLogController {
             d.messageCount           = e.getMessageCount();
             d.closedReason           = e.getClosedReason();
             d.isAnonymous            = e.getIsAnonymous();
+            d.hadReservation         = e.getHadReservation();
             d.startedAt              = e.getStartedAt();
             d.endedAt                = e.getEndedAt();
             return d;

@@ -3,6 +3,9 @@ package app.coincidir.api.coinbot;
 import app.coincidir.api.domain.ConversationLog;
 import app.coincidir.api.repository.ConversationLogRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +14,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -46,6 +50,7 @@ public class PublicConversationLogController {
 
     private final ConversationLogRepository repo;
     private final GeolocationService geo;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostMapping
     @Transactional
@@ -108,19 +113,42 @@ public class PublicConversationLogController {
         // del transcript, los preferimos sobre los anteriores (no nulos).
         if (nullIfBlank(body.clientFirstName) != null) e.setClientFirstName(nullIfBlank(body.clientFirstName));
         if (nullIfBlank(body.clientLastName)  != null) e.setClientLastName(nullIfBlank(body.clientLastName));
-        if (nullIfBlank(body.clientExtraJson) != null) e.setClientExtraJson(body.clientExtraJson);
+
+        // clientExtraJson: MERGE inteligente en vez de pisar.
+        // Si la conversación ya tenía email/phone/dni y el nuevo payload viene
+        // con esos campos en null o ausentes, los preservamos. Si vienen con
+        // valor nuevo, los sobrescribimos. Esto evita el bug clásico donde
+        // la extracción del transcript hace 2 llamadas seguidas y la segunda
+        // pierde campos que la primera sí había detectado.
+        String mergedExtra = mergeClientExtraJson(e.getClientExtraJson(), body.clientExtraJson);
+        if (mergedExtra != null) e.setClientExtraJson(mergedExtra);
+
+        // hadReservation: sticky TRUE. Si alguna vez la charla disparó una
+        // tool de escritura (add_record/update_record/delete_record), queda
+        // marcada para siempre — aunque el motivo final sea timeout o
+        // beforeunload. Sirve para distinguir en la UI "charlas que terminaron
+        // en reserva" de "charlas que solo consultaron".
+        String incomingReason = body.closedReason != null ? body.closedReason : "timeout";
+        boolean isReservationSignal = incomingReason.startsWith("tool_") || "reservation_made".equals(incomingReason);
+        if (isReservationSignal) {
+            e.setHadReservation(Boolean.TRUE);
+        } else if (e.getHadReservation() == null) {
+            // Defensivo: si la fila es vieja y vino con NULL, normalizar a false.
+            e.setHadReservation(Boolean.FALSE);
+        }
 
         // Contenido — siempre se actualiza con el último estado.
         e.setMessagesJson(body.messagesJson);
         e.setMessageCount(body.messageCount != null ? body.messageCount : 0);
-        e.setClosedReason(body.closedReason != null ? body.closedReason : "timeout");
+        e.setClosedReason(incomingReason);
         e.setIsAnonymous(e.getClientFirstName() == null && e.getClientLastName() == null);
         e.setEndedAt(body.endedAt != null ? body.endedAt : Instant.now());
 
         ConversationLog saved = repo.save(e);
-        log.info("[public] conversation_log {} id={} brand={} anon={} msgs={} reason={} visitor={}",
+        log.info("[public] conversation_log {} id={} brand={} anon={} hadRes={} msgs={} reason={} visitor={}",
                 isUpdate ? "UPDATED" : "CREATED",
                 saved.getId(), saved.getBrandName(), saved.getIsAnonymous(),
+                saved.getHadReservation(),
                 saved.getMessageCount(), saved.getClosedReason(), saved.getVisitorId());
 
         Map<String, Object> out = new HashMap<>();
@@ -132,6 +160,57 @@ public class PublicConversationLogController {
 
     private static String nullIfBlank(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
+    /**
+     * Mergea dos JSON objects de clientExtra preservando los campos del actual
+     * cuando el nuevo trae null o no los incluye. Devuelve null solo si AMBOS
+     * son null/blank (en cuyo caso el caller no debe modificar la entidad).
+     *
+     * Reglas:
+     *   - Si current es null y incoming es null/blank → devuelve null (caller no hace nada).
+     *   - Si current es null y incoming válido → devuelve incoming tal cual.
+     *   - Si current válido e incoming null/blank → devuelve current (no toca nada).
+     *   - Si ambos válidos → mergea campo por campo del root object:
+     *       · si incoming.field es no-null → gana incoming
+     *       · si incoming.field es null o ausente → preserva current.field
+     *
+     * Solo mergea el primer nivel (no recursivo) porque clientExtra es flat
+     * por diseño: { email, phone, dni }. Si en el futuro se anida, ampliar
+     * esta lógica con cuidado para no degradar performance del UPSERT.
+     *
+     * Best-effort: si algún JSON está mal formado, devuelve el incoming sin
+     * mergear (no rompe el save). Logueamos para no perderlo.
+     */
+    private String mergeClientExtraJson(String currentJson, String incomingJson) {
+        boolean curEmpty = currentJson == null || currentJson.isBlank();
+        boolean incEmpty = incomingJson == null || incomingJson.isBlank();
+        if (curEmpty && incEmpty) return null;
+        if (curEmpty) return incomingJson;
+        if (incEmpty) return currentJson;
+        try {
+            JsonNode curNode = objectMapper.readTree(currentJson);
+            JsonNode incNode = objectMapper.readTree(incomingJson);
+            if (!curNode.isObject() || !incNode.isObject()) {
+                // Si no son objetos JSON, no podemos mergear. Tomamos el nuevo.
+                return incomingJson;
+            }
+            ObjectNode merged = ((ObjectNode) curNode).deepCopy();
+            Iterator<String> incFields = incNode.fieldNames();
+            while (incFields.hasNext()) {
+                String f = incFields.next();
+                JsonNode v = incNode.get(f);
+                // Solo sobreescribimos si el nuevo tiene un valor no-nulo y no-blank.
+                if (v != null && !v.isNull()) {
+                    if (v.isTextual() && v.asText().isBlank()) continue;
+                    merged.set(f, v);
+                }
+            }
+            return objectMapper.writeValueAsString(merged);
+        } catch (Exception ex) {
+            log.warn("[public] mergeClientExtraJson falló, uso el nuevo crudo: {}", ex.getMessage());
+            return incomingJson;
+        }
     }
 
     private static String resolveClientIp(HttpServletRequest req) {
