@@ -7,16 +7,28 @@ import java.time.Instant;
 
 /**
  * BotDemo — snapshot completo de la configuración del bot pensado como
- * "plantilla" para demos.
+ * "plantilla" (backup) para alternar rápido entre escenarios.
  *
- * Incluye:
- *   - config completo del BotConfig (serializado como JSON para simplificar)
- *   - catálogos Excel (metadata + filas, también como JSON)
- *   - conectores
- *   - tools
+ * Incluye TODO lo que se considera "configuración del bot":
+ *   - config base del BotConfig (serializado como JSON)
+ *   - catálogos Excel (solo metadata: nombres + active. Las filas NO se clonan)
+ *   - conectores de BD
+ *   - tools (SQL)
+ *   - prompt templates (plantillas de prompt)
+ *   - integraciones API (REST externas) + sus endpoints
+ *   - bot tables (tablas custom — solo definición, NO registros)
+ *   - idiomas configurados + voces
+ *   - textos del frontend (ui-texts) + traducciones
  *
- * Al "aplicar" una demo, el backend reemplaza la config vigente y las tablas
- * relacionadas con el contenido del snapshot.
+ * NO se guardan (decisión consciente):
+ *   - usuarios y roles (sensible)
+ *   - logs de conversación, alertas de fraude, base de clientes (operativo)
+ *   - imágenes/videos del menú (binarios pesados)
+ *   - registros de bot tables (datos del cliente, podrían pisarse)
+ *   - métricas de uso / billing
+ *
+ * Al "aplicar" un backup, el frontend orquesta el reemplazo módulo por módulo
+ * (este backend es "dumb storage" — guarda y devuelve JSON blobs).
  */
 @Entity
 @Table(name = "bot_demo", indexes = {
@@ -53,6 +65,26 @@ public class BotDemo {
     /** Tools del bot serializadas. */
     @Column(name = "tools_json", columnDefinition = "LONGTEXT")
     private String toolsJson;
+
+    /** Plantillas de prompt (bot_prompt_template) serializadas. */
+    @Column(name = "prompt_templates_json", columnDefinition = "LONGTEXT")
+    private String promptTemplatesJson;
+
+    /** Integraciones API (REST externas) + endpoints, serializadas. */
+    @Column(name = "api_integrations_json", columnDefinition = "LONGTEXT")
+    private String apiIntegrationsJson;
+
+    /** Bot Tables (definición de tablas custom, sin registros) serializadas. */
+    @Column(name = "bot_tables_json", columnDefinition = "LONGTEXT")
+    private String botTablesJson;
+
+    /** Idiomas configurados (bot_language) + voces, serializados. */
+    @Column(name = "languages_json", columnDefinition = "LONGTEXT")
+    private String languagesJson;
+
+    /** Textos del frontend (ui_text + traducciones) serializados. */
+    @Column(name = "ui_texts_json", columnDefinition = "LONGTEXT")
+    private String uiTextsJson;
 
     /** Última vez que se aplicó esta demo (para ordenar y mostrar en la UI). */
     @Column(name = "last_applied_at")

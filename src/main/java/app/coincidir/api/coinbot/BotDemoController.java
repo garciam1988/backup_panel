@@ -72,6 +72,11 @@ public class BotDemoController {
         e.setCatalogsJson(body.catalogsJson);
         e.setConnectorsJson(body.connectorsJson);
         e.setToolsJson(body.toolsJson);
+        e.setPromptTemplatesJson(body.promptTemplatesJson);
+        e.setApiIntegrationsJson(body.apiIntegrationsJson);
+        e.setBotTablesJson(body.botTablesJson);
+        e.setLanguagesJson(body.languagesJson);
+        e.setUiTextsJson(body.uiTextsJson);
         if (auth != null && auth.getName() != null) {
             e.setCreatedBy(auth.getName());
             e.setUpdatedBy(auth.getName());
@@ -97,6 +102,11 @@ public class BotDemoController {
         if (body.catalogsJson != null)  e.setCatalogsJson(body.catalogsJson);
         if (body.connectorsJson != null) e.setConnectorsJson(body.connectorsJson);
         if (body.toolsJson != null)     e.setToolsJson(body.toolsJson);
+        if (body.promptTemplatesJson != null) e.setPromptTemplatesJson(body.promptTemplatesJson);
+        if (body.apiIntegrationsJson != null) e.setApiIntegrationsJson(body.apiIntegrationsJson);
+        if (body.botTablesJson != null)       e.setBotTablesJson(body.botTablesJson);
+        if (body.languagesJson != null)       e.setLanguagesJson(body.languagesJson);
+        if (body.uiTextsJson != null)         e.setUiTextsJson(body.uiTextsJson);
         if (auth != null && auth.getName() != null) e.setUpdatedBy(auth.getName());
         log.info("demo updated id={} name={}", id, e.getName());
         return BotDemoSummary.from(repo.save(e));
@@ -130,6 +140,11 @@ public class BotDemoController {
         public String catalogsJson;
         public String connectorsJson;
         public String toolsJson;
+        public String promptTemplatesJson;
+        public String apiIntegrationsJson;
+        public String botTablesJson;
+        public String languagesJson;
+        public String uiTextsJson;
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -145,6 +160,16 @@ public class BotDemoController {
         public Boolean hasCatalogs;
         public Boolean hasConnectors;
         public Boolean hasTools;
+        public Boolean hasPromptTemplates;
+        public Boolean hasApiIntegrations;
+        public Boolean hasBotTables;
+        public Boolean hasLanguages;
+        public Boolean hasUiTexts;
+
+        /** True si el JSON existe, no está vacío y no es array vacío. */
+        static boolean nonEmpty(String json) {
+            return json != null && !json.isBlank() && !json.equals("[]");
+        }
 
         public static BotDemoSummary from(BotDemo e) {
             BotDemoSummary d = new BotDemoSummary();
@@ -156,9 +181,14 @@ public class BotDemoController {
             d.createdBy     = e.getCreatedBy();
             d.updatedAt     = e.getUpdatedAt();
             d.updatedBy     = e.getUpdatedBy();
-            d.hasCatalogs   = e.getCatalogsJson()   != null && !e.getCatalogsJson().isBlank()   && !e.getCatalogsJson().equals("[]");
-            d.hasConnectors = e.getConnectorsJson() != null && !e.getConnectorsJson().isBlank() && !e.getConnectorsJson().equals("[]");
-            d.hasTools      = e.getToolsJson()      != null && !e.getToolsJson().isBlank()      && !e.getToolsJson().equals("[]");
+            d.hasCatalogs        = nonEmpty(e.getCatalogsJson());
+            d.hasConnectors      = nonEmpty(e.getConnectorsJson());
+            d.hasTools           = nonEmpty(e.getToolsJson());
+            d.hasPromptTemplates = nonEmpty(e.getPromptTemplatesJson());
+            d.hasApiIntegrations = nonEmpty(e.getApiIntegrationsJson());
+            d.hasBotTables       = nonEmpty(e.getBotTablesJson());
+            d.hasLanguages       = nonEmpty(e.getLanguagesJson());
+            d.hasUiTexts         = nonEmpty(e.getUiTextsJson());
             return d;
         }
     }
@@ -169,6 +199,11 @@ public class BotDemoController {
         public String catalogsJson;
         public String connectorsJson;
         public String toolsJson;
+        public String promptTemplatesJson;
+        public String apiIntegrationsJson;
+        public String botTablesJson;
+        public String languagesJson;
+        public String uiTextsJson;
 
         public static BotDemoFull from(BotDemo e) {
             BotDemoFull d = new BotDemoFull();
@@ -180,13 +215,23 @@ public class BotDemoController {
             d.createdBy      = e.getCreatedBy();
             d.updatedAt      = e.getUpdatedAt();
             d.updatedBy      = e.getUpdatedBy();
-            d.configJson     = e.getConfigJson();
-            d.catalogsJson   = e.getCatalogsJson();
-            d.connectorsJson = e.getConnectorsJson();
-            d.toolsJson      = e.getToolsJson();
-            d.hasCatalogs    = e.getCatalogsJson()   != null && !e.getCatalogsJson().isBlank()   && !e.getCatalogsJson().equals("[]");
-            d.hasConnectors  = e.getConnectorsJson() != null && !e.getConnectorsJson().isBlank() && !e.getConnectorsJson().equals("[]");
-            d.hasTools       = e.getToolsJson()      != null && !e.getToolsJson().isBlank()      && !e.getToolsJson().equals("[]");
+            d.configJson           = e.getConfigJson();
+            d.catalogsJson         = e.getCatalogsJson();
+            d.connectorsJson       = e.getConnectorsJson();
+            d.toolsJson            = e.getToolsJson();
+            d.promptTemplatesJson  = e.getPromptTemplatesJson();
+            d.apiIntegrationsJson  = e.getApiIntegrationsJson();
+            d.botTablesJson        = e.getBotTablesJson();
+            d.languagesJson        = e.getLanguagesJson();
+            d.uiTextsJson          = e.getUiTextsJson();
+            d.hasCatalogs          = nonEmpty(e.getCatalogsJson());
+            d.hasConnectors        = nonEmpty(e.getConnectorsJson());
+            d.hasTools             = nonEmpty(e.getToolsJson());
+            d.hasPromptTemplates   = nonEmpty(e.getPromptTemplatesJson());
+            d.hasApiIntegrations   = nonEmpty(e.getApiIntegrationsJson());
+            d.hasBotTables         = nonEmpty(e.getBotTablesJson());
+            d.hasLanguages         = nonEmpty(e.getLanguagesJson());
+            d.hasUiTexts           = nonEmpty(e.getUiTextsJson());
             return d;
         }
     }
