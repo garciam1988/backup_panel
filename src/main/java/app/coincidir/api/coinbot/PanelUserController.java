@@ -1,5 +1,6 @@
 package app.coincidir.api.coinbot;
 
+import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.domain.AppRole;
 import app.coincidir.api.domain.PanelUser;
 import app.coincidir.api.repository.AppRoleRepository;
@@ -16,7 +17,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * PanelUserController — CRUD de usuarios del sistema (operadores y admins).
@@ -43,6 +46,7 @@ public class PanelUserController {
     private final PanelUserRepository repo;
     private final AppRoleRepository roleRepo;
     private final PermissionsService permissionsService;
+    private final AuditService auditService;
 
     @GetMapping
     @Transactional(readOnly = true)
@@ -78,7 +82,20 @@ public class PanelUserController {
         u.setActive(body.active == null ? Boolean.TRUE : body.active);
         u.setIsSystem(Boolean.FALSE);
         if (auth != null && auth.getName() != null) u.setCreatedBy(auth.getName());
-        return toDto(repo.save(u));
+        PanelUser saved = repo.save(u);
+
+        try {
+            auditService.logCreate(
+                "user.create",
+                "User",
+                String.valueOf(saved.getId()),
+                saved.getUsername(),
+                "admin",
+                snapshotForAudit(saved)
+            );
+        } catch (Exception ignored) {}
+
+        return toDto(saved);
     }
 
     @PutMapping("/{id}")
@@ -87,6 +104,9 @@ public class PanelUserController {
         requireCanManageUsers(auth);
         PanelUser u = repo.findById(id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        // Snapshot ANTES de aplicar cambios — para que el diff sea preciso
+        Map<String, Object> oldSnap = snapshotForAudit(u);
 
         // Sólo DIOS (fullAccess) puede editar usuarios system
         if (Boolean.TRUE.equals(u.getIsSystem())) {
@@ -132,7 +152,24 @@ public class PanelUserController {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Password mínimo 4 caracteres");
             u.setPasswordHash(BCrypt.hashpw(body.password, BCrypt.gensalt()));
         }
-        return toDto(repo.save(u));
+        PanelUser saved = repo.save(u);
+
+        try {
+            Map<String, Object> newSnap = snapshotForAudit(saved);
+            if (!oldSnap.equals(newSnap)) {
+                auditService.logUpdate(
+                    "user.update",
+                    "User",
+                    String.valueOf(saved.getId()),
+                    saved.getUsername(),
+                    "admin",
+                    oldSnap,
+                    newSnap
+                );
+            }
+        } catch (Exception ignored) {}
+
+        return toDto(saved);
     }
 
     @DeleteMapping("/{id}")
@@ -145,7 +182,41 @@ public class PanelUserController {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "No se puede borrar un usuario del sistema (DIOS)");
         }
+        Map<String, Object> oldSnap = snapshotForAudit(u);
+        String username = u.getUsername();
         repo.delete(u);
+
+        try {
+            auditService.logDelete(
+                "user.delete",
+                "User",
+                String.valueOf(id),
+                username,
+                "admin",
+                oldSnap
+            );
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Snapshot de campos auditables del usuario. Importante: NO incluimos
+     * passwordHash. El AuditEventListener tiene un filtro de campos sensibles
+     * que igual lo rechazaría, pero por defensa en profundidad lo omitimos.
+     *
+     * Sí incluimos los flags que marcan cambios de permisos importantes:
+     * role, roleId, enabledAdminSections, enabledPanels, active.
+     */
+    private Map<String, Object> snapshotForAudit(PanelUser u) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (u == null) return m;
+        m.put("username", u.getUsername());
+        m.put("displayName", u.getDisplayName());
+        m.put("role", u.getRole());
+        m.put("roleId", u.getRoleId());
+        m.put("enabledAdminSections", u.getEnabledAdminSections());
+        m.put("enabledPanels", u.getEnabledPanels());
+        m.put("active", u.getActive());
+        return m;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

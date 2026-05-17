@@ -1,5 +1,6 @@
 package app.coincidir.api.botplatform.controller;
 
+import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.botplatform.domain.BotTable;
 import app.coincidir.api.botplatform.domain.BotTableRecord;
 import app.coincidir.api.botplatform.domain.EmailLog;
@@ -31,7 +32,11 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -64,6 +69,7 @@ public class BotTableAdminController {
     private final BotTableEmailService emailService;
     private final EmailReminderJob reminderJob;
     private final ApplicationEventPublisher eventPublisher;
+    private final AuditService auditService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────── Tablas ───────
@@ -98,7 +104,20 @@ public class BotTableAdminController {
         BotTable t = new BotTable();
         applyTableRequest(t, req);
         t.setColumnsJson(validatedSchema);
-        return toDto(tableRepo.save(t));
+        BotTable saved = tableRepo.save(t);
+
+        try {
+            auditService.logCreate(
+                "bot_table.create",
+                "BotTable",
+                String.valueOf(saved.getId()),
+                saved.getName() + " (" + saved.getSlug() + ")",
+                "admin",
+                snapshotTableForAudit(saved)
+            );
+        } catch (Exception ignored) {}
+
+        return toDto(saved);
     }
 
     @PutMapping("/{id}")
@@ -106,6 +125,9 @@ public class BotTableAdminController {
     public TableDto update(@PathVariable Long id, @RequestBody TableSaveRequest req) {
         BotTable t = tableRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        // Snapshot ANTES de cambios
+        Map<String, Object> oldSnap = snapshotTableForAudit(t);
+
         // Slug no se puede cambiar (rompe referencias en conversaciones existentes)
         if (req.slug != null && !req.slug.equals(t.getSlug()))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El slug no se puede cambiar después de crear la tabla");
@@ -114,14 +136,49 @@ public class BotTableAdminController {
             catch (BotTableService.SchemaError e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage()); }
         }
         applyTableRequest(t, req);
-        return toDto(tableRepo.save(t));
+        BotTable saved = tableRepo.save(t);
+
+        try {
+            Map<String, Object> newSnap = snapshotTableForAudit(saved);
+            if (!oldSnap.equals(newSnap)) {
+                auditService.logUpdate(
+                    "bot_table.update",
+                    "BotTable",
+                    String.valueOf(saved.getId()),
+                    saved.getName() + " (" + saved.getSlug() + ")",
+                    "admin",
+                    oldSnap,
+                    newSnap
+                );
+            }
+        } catch (Exception ignored) {}
+
+        return toDto(saved);
     }
 
     @DeleteMapping("/{id}")
     @Transactional
     public void delete(@PathVariable Long id) {
+        // Snapshot previo para audit. Si la tabla no existe, ignoramos.
+        BotTable t = tableRepo.findById(id).orElse(null);
+        Map<String, Object> oldSnap = t != null ? snapshotTableForAudit(t) : Collections.emptyMap();
+        String label = t != null ? (t.getName() + " (" + t.getSlug() + ")") : null;
+
         recordRepo.deleteAllByTableId(id);
         tableRepo.deleteById(id);
+
+        if (t != null) {
+            try {
+                auditService.logDelete(
+                    "bot_table.delete",
+                    "BotTable",
+                    String.valueOf(id),
+                    label,
+                    "admin",
+                    oldSnap
+                );
+            } catch (Exception ignored) {}
+        }
     }
 
     // ─────── Registros ───────
@@ -157,6 +214,19 @@ public class BotTableAdminController {
             rec = recordRepo.save(rec);
             // Mismo evento que cuando lo crea el bot — el listener decide si manda mail.
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created")); } catch (Exception ignored) {}
+
+            try {
+                Map<String, Object> snap = jsonToMap(normalized);
+                auditService.logCreate(
+                    actionKey(t, "create"),
+                    entityTypeOf(t),
+                    String.valueOf(rec.getId()),
+                    buildEntityLabel(t, snap),
+                    "admin",
+                    snap
+                );
+            } catch (Exception ignored) {}
+
             return toRecordDto(rec);
         } catch (BotTableService.SchemaError e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -170,6 +240,12 @@ public class BotTableAdminController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         BotTable t = tableRepo.findById(rec.getTableId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        // Snapshot ANTES para audit
+        Map<String, Object> auditOldSnap;
+        try { auditOldSnap = jsonToMap(rec.getDataJson()); }
+        catch (Exception e) { auditOldSnap = Collections.emptyMap(); }
+
         try {
             // Merge con dataJson actual
             JsonNode current = objectMapper.readTree(rec.getDataJson());
@@ -180,6 +256,22 @@ public class BotTableAdminController {
             rec.setDataJson(normalized);
             rec = recordRepo.save(rec);
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); } catch (Exception ignored) {}
+
+            try {
+                Map<String, Object> auditNewSnap = jsonToMap(normalized);
+                if (!auditOldSnap.equals(auditNewSnap)) {
+                    auditService.logUpdate(
+                        actionKey(t, "update"),
+                        entityTypeOf(t),
+                        String.valueOf(rec.getId()),
+                        buildEntityLabel(t, auditNewSnap),
+                        "admin",
+                        auditOldSnap,
+                        auditNewSnap
+                    );
+                }
+            } catch (Exception ignored) {}
+
             return toRecordDto(rec);
         } catch (BotTableService.SchemaError e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -195,6 +287,13 @@ public class BotTableAdminController {
         if (opt.isEmpty()) return;
         BotTableRecord rec = opt.get();
         BotTable t = tableRepo.findById(rec.getTableId()).orElse(null);
+
+        // Snapshot previo para audit
+        Map<String, Object> auditOldSnap;
+        try { auditOldSnap = jsonToMap(rec.getDataJson()); }
+        catch (Exception e) { auditOldSnap = Collections.emptyMap(); }
+        String auditLabel = t != null ? buildEntityLabel(t, auditOldSnap) : null;
+
         // Disparar evento ANTES de borrar — el listener necesita poder leer
         // los datos del registro para extraer el email del destinatario.
         if (t != null) {
@@ -202,6 +301,19 @@ public class BotTableAdminController {
             catch (Exception ignored) {}
         }
         recordRepo.delete(rec);
+
+        if (t != null) {
+            try {
+                auditService.logDelete(
+                    actionKey(t, "delete"),
+                    entityTypeOf(t),
+                    String.valueOf(recordId),
+                    auditLabel,
+                    "admin",
+                    auditOldSnap
+                );
+            } catch (Exception ignored) {}
+        }
     }
 
     // ─────── Import / Export ───────
@@ -510,6 +622,81 @@ public class BotTableAdminController {
         d.createdAt = r.getCreatedAt();
         d.updatedAt = r.getUpdatedAt();
         return d;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Helpers de auditoría (privados a este controller)
+    // Mismo patrón que PanelBotTableController para que ambos generen logs
+    // homogéneos. Si en el futuro centralizamos esto, sería un AuditHelpers
+    // util compartido.
+    // ─────────────────────────────────────────────────────────────────────
+
+    private Map<String, Object> jsonToMap(String json) {
+        if (json == null || json.isBlank()) return Collections.emptyMap();
+        try {
+            JsonNode n = objectMapper.readTree(json);
+            if (n == null || !n.isObject()) return Collections.emptyMap();
+            return objectMapper.convertValue(n, Map.class);
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
+    }
+
+    private String actionKey(BotTable t, String verb) {
+        String slug = t.getSlug() != null ? t.getSlug() : "record";
+        if (slug.length() > 2 && slug.endsWith("s")) slug = slug.substring(0, slug.length() - 1);
+        return slug + "." + verb;
+    }
+
+    private String entityTypeOf(BotTable t) {
+        if (t == null) return "Record";
+        return t.getName() != null && !t.getName().isBlank() ? t.getName() : "Record";
+    }
+
+    private String buildEntityLabel(BotTable t, Map<String, Object> snap) {
+        if (snap == null || snap.isEmpty()) return null;
+        String name = pickFirstNonBlank(snap,
+            "Nombre y Apellido", "Nombre Y Apellido", "nombre", "name",
+            "Cliente", "cliente", "Razón Social");
+        String date = pickFirstNonBlank(snap,
+            "fecha_display", "Fecha Display", "Fecha y Hora Reserva", "fecha", "Fecha");
+        if (name != null && date != null) return name + " — " + date;
+        if (name != null) return name;
+        if (date != null) return date;
+        return null;
+    }
+
+    private String pickFirstNonBlank(Map<String, Object> snap, String... keys) {
+        for (String k : keys) {
+            Object v = snap.get(k);
+            if (v == null) continue;
+            String s = String.valueOf(v).trim();
+            if (!s.isEmpty() && !"null".equals(s)) return s;
+        }
+        return null;
+    }
+
+    /**
+     * Snapshot de los campos auditables de una BotTable (definición de la
+     * tabla en sí — name, slug, columnsJson, config). El columnsJson incluido
+     * es CRÍTICO porque cualquier cambio de schema afecta cómo el bot persiste
+     * datos.
+     */
+    private Map<String, Object> snapshotTableForAudit(BotTable t) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (t == null) return m;
+        m.put("name", t.getName());
+        m.put("slug", t.getSlug());
+        m.put("description", t.getDescription());
+        m.put("active", t.getActive());
+        m.put("columnsJson", t.getColumnsJson());
+        m.put("panelConfigJson", t.getPanelConfigJson());
+        m.put("confirmAdd", t.getConfirmAdd());
+        m.put("confirmUpdate", t.getConfirmUpdate());
+        m.put("confirmDelete", t.getConfirmDelete());
+        m.put("injectToPrompt", t.getInjectToPrompt());
+        m.put("injectFields", t.getInjectFields());
+        return m;
     }
 
     // ─────── DTOs ───────

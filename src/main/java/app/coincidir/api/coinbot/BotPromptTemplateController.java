@@ -1,5 +1,6 @@
 package app.coincidir.api.coinbot;
 
+import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.domain.BotPromptTemplate;
 import app.coincidir.api.repository.BotPromptTemplateRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -11,7 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -31,6 +34,7 @@ import java.util.Optional;
 public class BotPromptTemplateController {
 
     private final BotPromptTemplateRepository repo;
+    private final AuditService auditService;
 
     // ─────────────────────────────────────────────────────────────────────
     // GET /api/admin/bot-prompt-templates?all=true
@@ -74,6 +78,19 @@ public class BotPromptTemplateController {
         entity.setActive(dto.active != null ? dto.active : Boolean.TRUE);
         BotPromptTemplate saved = repo.save(entity);
         log.info("bot_prompt_template creado: id={}, name='{}'", saved.getId(), saved.getName());
+
+        // Audit
+        try {
+            auditService.logCreate(
+                "prompt.create",
+                "PromptTemplate",
+                String.valueOf(saved.getId()),
+                saved.getName(),
+                "admin",
+                snapshotForAudit(saved)
+            );
+        } catch (Exception ignored) {}
+
         return ResponseEntity.status(HttpStatus.CREATED).body(BotPromptTemplateDto.fromEntity(saved));
     }
 
@@ -84,12 +101,44 @@ public class BotPromptTemplateController {
     @Transactional
     public ResponseEntity<BotPromptTemplateDto> update(@PathVariable Long id, @RequestBody BotPromptTemplateDto dto) {
         return repo.findById(id).map(entity -> {
+            // Snapshot ANTES del cambio para diff de audit
+            Map<String, Object> oldSnap = snapshotForAudit(entity);
+
             if (dto.name != null && !dto.name.isBlank()) entity.setName(dto.name.trim());
             if (dto.description != null) entity.setDescription(dto.description);
             if (dto.promptText != null)  entity.setPromptText(dto.promptText);
             if (dto.active != null)      entity.setActive(dto.active);
             BotPromptTemplate saved = repo.save(entity);
             log.info("bot_prompt_template actualizado: id={}, name='{}'", saved.getId(), saved.getName());
+
+            // Audit: si pasó de inactivo a activo, registramos también como
+            // "prompt.activate" para que sea fácil filtrar quien activó qué
+            // plantilla (que es la acción "peligrosa" — la activa la usa el bot).
+            try {
+                Map<String, Object> newSnap = snapshotForAudit(saved);
+                Object oldActive = oldSnap.get("active");
+                Object newActive = newSnap.get("active");
+                if (Boolean.FALSE.equals(oldActive) && Boolean.TRUE.equals(newActive)) {
+                    auditService.logAction(
+                        "prompt.activate",
+                        "PromptTemplate",
+                        String.valueOf(saved.getId()),
+                        saved.getName(),
+                        "admin",
+                        "Activó la plantilla \"" + saved.getName() + "\""
+                    );
+                }
+                auditService.logUpdate(
+                    "prompt.update",
+                    "PromptTemplate",
+                    String.valueOf(saved.getId()),
+                    saved.getName(),
+                    "admin",
+                    oldSnap,
+                    newSnap
+                );
+            } catch (Exception ignored) {}
+
             return ResponseEntity.ok(BotPromptTemplateDto.fromEntity(saved));
         }).orElse(ResponseEntity.notFound().build());
     }
@@ -100,10 +149,45 @@ public class BotPromptTemplateController {
     @DeleteMapping("/{id}")
     @Transactional
     public ResponseEntity<Void> delete(@PathVariable Long id) {
-        if (!repo.existsById(id)) return ResponseEntity.notFound().build();
+        Optional<BotPromptTemplate> opt = repo.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.notFound().build();
+
+        // Snapshot previo para audit
+        BotPromptTemplate entity = opt.get();
+        Map<String, Object> oldSnap = snapshotForAudit(entity);
+        String label = entity.getName();
+
         repo.deleteById(id);
         log.info("bot_prompt_template eliminado: id={}", id);
+
+        try {
+            auditService.logDelete(
+                "prompt.delete",
+                "PromptTemplate",
+                String.valueOf(id),
+                label,
+                "admin",
+                oldSnap
+            );
+        } catch (Exception ignored) {}
+
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Snapshot de los campos auditables de una plantilla. El promptText es
+     * intencionalmente incluido — si alguien lo modificó queremos saberlo,
+     * aunque el diff puede llegar a ser largo si el prompt es grande. El
+     * AuditEventListener ya hace truncate del JSON serializado al guardar.
+     */
+    private Map<String, Object> snapshotForAudit(BotPromptTemplate e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (e == null) return m;
+        m.put("name", e.getName());
+        m.put("description", e.getDescription());
+        m.put("promptText", e.getPromptText());
+        m.put("active", e.getActive());
+        return m;
     }
 
     // ─────────────────────────────────────────────────────────────────────

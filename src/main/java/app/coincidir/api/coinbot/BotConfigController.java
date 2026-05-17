@@ -1,5 +1,6 @@
 package app.coincidir.api.coinbot;
 
+import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.domain.BotConfig;
 import app.coincidir.api.repository.BotConfigRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -11,6 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * BotConfigController — CRUD del singleton bot_config.
@@ -29,6 +33,7 @@ public class BotConfigController {
     private static final Long SINGLETON_ID = 1L;
 
     private final BotConfigRepository repo;
+    private final AuditService auditService;
 
     // ─────────────────────────────────────────────────────────────────────
     // GET /api/admin/bot-config
@@ -54,6 +59,11 @@ public class BotConfigController {
     @Transactional
     public BotConfigDto update(@RequestBody BotConfigDto dto, Authentication auth) {
         BotConfig entity = repo.findById(SINGLETON_ID).orElseGet(this::createDefault);
+
+        // Snapshot del estado PREVIO para el audit log. Tomamos solo los campos
+        // que el endpoint puede modificar — el resto (timestamps, IDs internos)
+        // no tiene sentido auditar.
+        Map<String, Object> oldSnap = snapshotForAudit(entity);
 
         // Aplicar el DTO sobre la entidad. Strings: null-safe, booleans: default-safe.
         if (dto.botName != null)           entity.setBotName(dto.botName);
@@ -126,6 +136,27 @@ public class BotConfigController {
 
         BotConfig saved = repo.save(entity);
         log.info("bot_config actualizado por {}", saved.getUpdatedBy());
+
+        // Audit: snapshot DESPUÉS de guardar para que el diff refleje exactamente
+        // lo que quedó persistido. El listener compara old vs new y solo loguea
+        // los campos que cambiaron — así si el usuario solo tocó botName, el
+        // log muestra solo botName en el diff (no todos los campos del config).
+        try {
+            Map<String, Object> newSnap = snapshotForAudit(saved);
+            // Si nada cambió, no logueamos. Esto evita ruido por "guardar" sin tocar.
+            if (!oldSnap.equals(newSnap)) {
+                auditService.logUpdate(
+                    "config.update",
+                    "BotConfig",
+                    String.valueOf(SINGLETON_ID),
+                    "Configuración del bot",
+                    "admin",
+                    oldSnap,
+                    newSnap
+                );
+            }
+        } catch (Exception ignored) {}
+
         return BotConfigDto.fromEntity(saved);
     }
 
@@ -135,6 +166,14 @@ public class BotConfigController {
     @PostMapping("/reset")
     @Transactional
     public BotConfigDto reset(Authentication auth) {
+        // Snapshot del estado PREVIO para que el audit log muestre exactamente
+        // qué se perdió en el reset. Esto es importante porque es una operación
+        // destructiva — si después alguien dice "se borró mi config", el log
+        // tiene todo lo que había.
+        Map<String, Object> oldSnap = repo.findById(SINGLETON_ID)
+            .map(this::snapshotForAudit)
+            .orElse(new LinkedHashMap<>());
+
         repo.findById(SINGLETON_ID).ifPresent(repo::delete);
         BotConfig entity = createDefault();
         if (auth != null && auth.getName() != null) {
@@ -142,6 +181,22 @@ public class BotConfigController {
             entity = repo.save(entity);
         }
         log.info("bot_config reseteada a defaults por {}", auth != null ? auth.getName() : "?");
+
+        // Audit: registramos como acción destructiva. El summary lo armamos
+        // explícito porque "Modificó N campos" no transmite la gravedad del reset.
+        try {
+            auditService.logActionWithChanges(
+                "config.reset",
+                "BotConfig",
+                String.valueOf(SINGLETON_ID),
+                "Configuración del bot",
+                "admin",
+                "Restauró la configuración del bot a los valores de fábrica",
+                oldSnap,
+                snapshotForAudit(entity)
+            );
+        } catch (Exception ignored) {}
+
         return BotConfigDto.fromEntity(entity);
     }
 
@@ -385,5 +440,85 @@ public class BotConfigController {
         if (s == null) return null;
         String t = s.trim();
         return t.isEmpty() ? null : t;
+    }
+
+    /**
+     * Snapshot del estado de la entidad para el audit log. Incluye solo los
+     * campos que el endpoint puede modificar (no timestamps internos, no IDs).
+     *
+     * Devuelve un Map<campo, valor>. El AuditEventListener calcula el diff
+     * entre dos snapshots y solo persiste los campos que difieren — así si
+     * alguien cambia solo "botName", el log muestra solo eso, no todos los
+     * campos.
+     *
+     * Si en el futuro agregás un campo nuevo en la entity que el endpoint
+     * pueda modificar, agregalo acá también para que el audit lo capture.
+     */
+    private Map<String, Object> snapshotForAudit(BotConfig e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (e == null) return m;
+        // Identidad
+        m.put("botName", e.getBotName());
+        m.put("brandName", e.getBrandName());
+        m.put("logoUrl", e.getLogoUrl());
+        m.put("botAvatarUrl", e.getBotAvatarUrl());
+        m.put("headerTitle", e.getHeaderTitle());
+        m.put("headerSubtitle", e.getHeaderSubtitle());
+        m.put("welcomeMessage", e.getWelcomeMessage());
+        // Contacto
+        m.put("contactWhatsapp", e.getContactWhatsapp());
+        m.put("contactPhone", e.getContactPhone());
+        m.put("contactAddress", e.getContactAddress());
+        // Tema/colores
+        m.put("themeJson", e.getThemeJson());
+        // Audio/TTS
+        m.put("allowTts", e.getAllowTts());
+        m.put("allowUserAudio", e.getAllowUserAudio());
+        m.put("useCustomVoice", e.getUseCustomVoice());
+        m.put("customVoiceId", e.getCustomVoiceId());
+        m.put("ttsModel", e.getTtsModel());
+        m.put("ttsStability", e.getTtsStability());
+        m.put("ttsSimilarity", e.getTtsSimilarity());
+        m.put("ttsStyle", e.getTtsStyle());
+        m.put("ttsSpeed", e.getTtsSpeed());
+        // Prompts y reglas
+        m.put("customPrompt", e.getCustomPrompt());
+        m.put("businessRulesJson", e.getBusinessRulesJson());
+        m.put("activePromptTemplateId", e.getActivePromptTemplateId());
+        m.put("dataRequestPrompt", e.getDataRequestPrompt());
+        // Permisos del bot
+        m.put("allowReadReceipts", e.getAllowReadReceipts());
+        m.put("allowShowImages", e.getAllowShowImages());
+        m.put("allowSendEmails", e.getAllowSendEmails());
+        // Accesos rápidos
+        m.put("showQuickAccess", e.getShowQuickAccess());
+        m.put("quickAccessJson", e.getQuickAccessJson());
+        // Comportamiento
+        m.put("conversationTimeoutMinutes", e.getConversationTimeoutMinutes());
+        // Fraude
+        m.put("fraudDetectionEnabled", e.getFraudDetectionEnabled());
+        m.put("fraudAlertEmails", e.getFraudAlertEmails());
+        m.put("fraudEmailSubject", e.getFraudEmailSubject());
+        m.put("fraudEmailTemplate", e.getFraudEmailTemplate());
+        // Paneles y menú
+        m.put("enabledPanels", e.getEnabledPanels());
+        m.put("panelOrdersConfigJson", e.getPanelOrdersConfigJson());
+        m.put("menuEnabled", e.getMenuEnabled());
+        m.put("menuLabel", e.getMenuLabel());
+        m.put("menuConfigJson", e.getMenuConfigJson());
+        // Vouchers/voicer/lenguaje
+        m.put("vouchersEnabled", e.getVouchersEnabled());
+        m.put("voucherApiBaseUrl", e.getVoucherApiBaseUrl());
+        m.put("language", e.getLanguage());
+        // Voces guardadas
+        m.put("savedVoicesJson", e.getSavedVoicesJson());
+        // Redes/web
+        m.put("websiteUrl", e.getWebsiteUrl());
+        m.put("websiteEnabled", e.getWebsiteEnabled());
+        m.put("instagramHandle", e.getInstagramHandle());
+        m.put("instagramEnabled", e.getInstagramEnabled());
+        m.put("facebookHandle", e.getFacebookHandle());
+        m.put("facebookEnabled", e.getFacebookEnabled());
+        return m;
     }
 }

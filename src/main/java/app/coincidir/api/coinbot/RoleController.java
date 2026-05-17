@@ -1,5 +1,6 @@
 package app.coincidir.api.coinbot;
 
+import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.domain.AppRole;
 import app.coincidir.api.domain.PanelUser;
 import app.coincidir.api.repository.AppRoleRepository;
@@ -19,7 +20,9 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * RoleController — CRUD de roles dinámicos. Solo accesible para usuarios con
@@ -40,6 +43,7 @@ public class RoleController {
     private final AppRoleRepository roleRepo;
     private final PanelUserRepository userRepo;
     private final PermissionsService permissionsService;
+    private final AuditService auditService;
 
     @GetMapping
     @Transactional(readOnly = true)
@@ -67,7 +71,20 @@ public class RoleController {
         r.setDescription(emptyToNull(body.description));
         r.setIsSystem(Boolean.FALSE);
         r.setPermissionsJson(buildJsonFromBody(body));
-        return toDto(roleRepo.save(r));
+        AppRole saved = roleRepo.save(r);
+
+        try {
+            auditService.logCreate(
+                "role.create",
+                "Role",
+                String.valueOf(saved.getId()),
+                saved.getCode() + " — " + saved.getName(),
+                "admin",
+                snapshotForAudit(saved)
+            );
+        } catch (Exception ignored) {}
+
+        return toDto(saved);
     }
 
     @PutMapping("/{id}")
@@ -76,6 +93,9 @@ public class RoleController {
         requireCanManageRoles(auth);
         AppRole r = roleRepo.findById(id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "Rol no encontrado"));
+
+        // Snapshot ANTES de cambios para audit
+        Map<String, Object> oldSnap = snapshotForAudit(r);
 
         // El code de un rol system NO se puede cambiar (DIOS, etc.)
         if (Boolean.TRUE.equals(r.getIsSystem())) {
@@ -114,7 +134,24 @@ public class RoleController {
         } else {
             r.setPermissionsJson(buildJsonFromBody(body));
         }
-        return toDto(roleRepo.save(r));
+        AppRole saved = roleRepo.save(r);
+
+        try {
+            Map<String, Object> newSnap = snapshotForAudit(saved);
+            if (!oldSnap.equals(newSnap)) {
+                auditService.logUpdate(
+                    "role.update",
+                    "Role",
+                    String.valueOf(saved.getId()),
+                    saved.getCode() + " — " + saved.getName(),
+                    "admin",
+                    oldSnap,
+                    newSnap
+                );
+            }
+        } catch (Exception ignored) {}
+
+        return toDto(saved);
     }
 
     @DeleteMapping("/{id}")
@@ -125,6 +162,10 @@ public class RoleController {
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "Rol no encontrado"));
         if (Boolean.TRUE.equals(r.getIsSystem()))
             throw new ResponseStatusException(HttpStatus.CONFLICT, "No se puede borrar un rol del sistema");
+
+        // Snapshot previo para audit
+        Map<String, Object> oldSnap = snapshotForAudit(r);
+        String label = r.getCode() + " — " + r.getName();
 
         // Si hay usuarios asignados al rol, los desvinculamos (roleId=null)
         // para no dejarlos huérfanos. Quedan con rol legacy hasta que el admin
@@ -139,6 +180,32 @@ public class RoleController {
         userRepo.saveAll(attached);
 
         roleRepo.delete(r);
+
+        try {
+            auditService.logDelete(
+                "role.delete",
+                "Role",
+                String.valueOf(id),
+                label,
+                "admin",
+                oldSnap
+            );
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Snapshot del rol para audit. permissionsJson incluido porque cualquier
+     * cambio en permisos es info crítica de auditoría (quién dio fullAccess
+     * a quién, etc).
+     */
+    private Map<String, Object> snapshotForAudit(AppRole r) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (r == null) return m;
+        m.put("code", r.getCode());
+        m.put("name", r.getName());
+        m.put("description", r.getDescription());
+        m.put("permissionsJson", r.getPermissionsJson());
+        return m;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
