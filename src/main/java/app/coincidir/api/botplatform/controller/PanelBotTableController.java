@@ -7,6 +7,8 @@ import app.coincidir.api.botplatform.repository.BotTableRepository;
 import app.coincidir.api.botplatform.service.BotTableChangeEvent;
 import app.coincidir.api.botplatform.service.BotTableService;
 import app.coincidir.api.botplatform.service.PanelBotTableService;
+import app.coincidir.api.domain.ConversationLog;
+import app.coincidir.api.repository.ConversationLogRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,6 +56,7 @@ public class PanelBotTableController {
     private final BotTableService service;
     private final PanelBotTableService panelService;
     private final ApplicationEventPublisher eventPublisher;
+    private final ConversationLogRepository conversationLogRepo;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────── Tablas (sólo las que tienen panel habilitado) ───────
@@ -245,6 +248,77 @@ public class PanelBotTableController {
         recordRepo.deleteById(recordId);
     }
 
+    // ─────── Conversación del bot asociada al record ───────
+
+    /**
+     * Devuelve la conversación del chat que creó el record (si la hay).
+     *
+     * Cómo se hace el matching:
+     *  - {@code bot_table_record.session_id} se setea cuando el bot ejecuta
+     *    add_record durante una sesión de chat (ver BotTableService.doAdd).
+     *  - El frontend del bot manda el mismo sessionId al cerrar la charla
+     *    como {@code visitor_id} en conversation_log (ver CoinBot.jsx, donde
+     *    visitorId = sessionIdRef.current).
+     *  - Por eso podemos joinearlos: record.session_id ↔ conversation_log.visitor_id.
+     *
+     * Si la charla todavía está activa (el cliente sigue tipeando), el
+     * conversation_log puede no existir aún — recién se persiste en el
+     * cierre (timeout, beforeunload, manual). En ese caso devolvemos
+     * 404 con un mensaje claro para que el frontend muestre algo amable.
+     *
+     * Si el record fue creado manualmente desde /admin o /panel (source != "bot"),
+     * no tiene session_id y también devolvemos 404.
+     */
+    @GetMapping("/{tableId}/records/{recordId}/conversation")
+    @Transactional(readOnly = true)
+    public ConversationDto getRecordConversation(@PathVariable Long tableId,
+                                                 @PathVariable Long recordId) {
+        // 1) Validamos que la tabla exista y tenga panel habilitado (consistencia
+        //    con el resto de endpoints del panel).
+        BotTable t = requirePanelEnabled(tableId);
+
+        // 2) Cargamos el record.
+        BotTableRecord rec = recordRepo.findById(recordId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Record no encontrado"));
+        if (!Objects.equals(rec.getTableId(), t.getId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El record no pertenece a esta tabla");
+        }
+
+        // 3) Si el record no tiene session_id, no hay chat asociado.
+        String sessionId = rec.getSessionId();
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "Esta reserva no fue creada por el bot — no hay conversación asociada.");
+        }
+
+        // 4) Buscamos el conversation_log por visitorId = sessionId.
+        Optional<ConversationLog> optLog = conversationLogRepo.findFirstByVisitorIdOrderByIdDesc(sessionId);
+        if (optLog.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "La conversación todavía está en curso o aún no fue registrada. Volvé a intentar más tarde.");
+        }
+
+        ConversationLog log = optLog.get();
+        ConversationDto dto = new ConversationDto();
+        dto.sessionId = sessionId;
+        dto.startedAt = log.getStartedAt();
+        dto.endedAt = log.getEndedAt();
+        dto.messageCount = log.getMessageCount();
+        dto.closedReason = log.getClosedReason();
+        dto.deviceType = log.getDeviceType();
+        dto.deviceOs = log.getDeviceOs();
+        dto.deviceBrowser = log.getDeviceBrowser();
+        dto.clientFirstName = log.getClientFirstName();
+        dto.clientLastName = log.getClientLastName();
+        // El messages_json ya está en formato JSON array — lo pasamos crudo
+        // al frontend que lo parsea. Si por algún motivo está vacío, devolvemos
+        // "[]" para que el frontend no se rompa al parsear.
+        dto.messagesJson = (log.getMessagesJson() == null || log.getMessagesJson().isBlank())
+                ? "[]"
+                : log.getMessagesJson();
+        return dto;
+    }
+
     // ─────── Conflict check (sin guardar) ───────
 
     @PostMapping("/{id}/conflict-check")
@@ -423,5 +497,26 @@ public class PanelBotTableController {
     public static class ConflictCheckRequest {
         public JsonNode data;
         public Long recordId;
+    }
+
+    /**
+     * DTO de la conversación asociada a un record. messagesJson llega como
+     * string JSON (array) ya serializado por la entity — el frontend lo
+     * parsea con JSON.parse(). El resto son metadatos para mostrar header
+     * informativo en el modal.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ConversationDto {
+        public String sessionId;
+        public Instant startedAt;
+        public Instant endedAt;
+        public Integer messageCount;
+        public String closedReason;   // timeout | beforeunload | manual | tool_*
+        public String deviceType;     // desktop | mobile | tablet
+        public String deviceOs;
+        public String deviceBrowser;
+        public String clientFirstName;
+        public String clientLastName;
+        public String messagesJson;   // JSON array crudo, frontend lo parsea
     }
 }
