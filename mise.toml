@@ -1,0 +1,16 @@
+# mise tool versions — pinneamos Maven 3.9.11 porque el default que railpack
+# elige (3.9.16) NO está disponible en archive.apache.org/dist/maven/maven-3/
+# y eso rompe el build de Railway con un 404.
+#
+# 3.9.11 está confirmada en:
+#   https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries/
+#
+# Java queda en 21 (default LTS, coincide con lo que veníamos usando).
+#
+# Si en el futuro railpack actualiza su default a una versión que SÍ exista
+# en el archive, podemos borrar este archivo y volver al comportamiento por
+# defecto.
+
+[tools]
+java = "21"
+maven = "3.9.11"
