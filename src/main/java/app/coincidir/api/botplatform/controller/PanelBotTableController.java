@@ -1,5 +1,7 @@
 package app.coincidir.api.botplatform.controller;
 
+import app.coincidir.api.audit.domain.AuditLog;
+import app.coincidir.api.audit.repository.AuditLogRepository;
 import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.botplatform.domain.BotTable;
 import app.coincidir.api.botplatform.domain.BotTableRecord;
@@ -17,6 +19,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -59,6 +62,7 @@ public class PanelBotTableController {
     private final ApplicationEventPublisher eventPublisher;
     private final ConversationLogRepository conversationLogRepo;
     private final AuditService auditService;
+    private final AuditLogRepository auditLogRepo;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────── Tablas (sólo las que tienen panel habilitado) ───────
@@ -400,6 +404,68 @@ public class PanelBotTableController {
         return dto;
     }
 
+    // ─────── Historial de auditoría del record ───────
+
+    /**
+     * Devuelve los logs de auditoría asociados a este record (cualquier
+     * acción que el módulo audit haya capturado: status_change, update,
+     * create, delete pasados, etc.).
+     *
+     * Se usa para mostrar la tab "Histórico" del modal de reserva en
+     * /reserve, con la trazabilidad completa de quién y cuándo tocó la
+     * reserva.
+     *
+     * Cap defensivo a 50 entries — es más que suficiente para una reserva
+     * (en la práctica suelen ser 1-5 eventos). Si por algún motivo hay
+     * más, el frontend solo muestra los más recientes.
+     *
+     * Sin filtro de permisos: cualquier usuario que puede acceder al
+     * /reserve puede ver esta info (es sobre la reserva misma, no sobre
+     * el sistema). Para auditoría profunda con diff, el operador usa el
+     * módulo /admin → Auditoría.
+     */
+    @GetMapping("/{tableId}/records/{recordId}/history")
+    @Transactional(readOnly = true)
+    public java.util.List<HistoryEventDto> getRecordHistory(@PathVariable Long tableId,
+                                                            @PathVariable Long recordId) {
+        // Validar que la tabla exista y tenga panel habilitado
+        BotTable t = requirePanelEnabled(tableId);
+
+        // Verificar que el record exista y pertenezca a esta tabla.
+        BotTableRecord rec = recordRepo.findById(recordId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Record no encontrado"));
+        if (!Objects.equals(rec.getTableId(), t.getId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El record no pertenece a esta tabla");
+        }
+
+        // entityType en el audit log es el nombre de la BotTable (ej "Reservas").
+        // Lo pasamos para filtrar más preciso aunque entityId ya sea único.
+        String entityType = t.getName();
+
+        java.util.List<AuditLog> logs = auditLogRepo.findByEntity(
+            String.valueOf(recordId),
+            entityType,
+            PageRequest.of(0, 50)
+        );
+
+        // Mapear a DTO acotado — el frontend no necesita el diff completo
+        // (el caller pidió "sin diff", solo quién/cuándo/qué acción).
+        java.util.List<HistoryEventDto> out = new java.util.ArrayList<>(logs.size());
+        for (AuditLog l : logs) {
+            HistoryEventDto d = new HistoryEventDto();
+            d.id = l.getId();
+            d.ts = l.getTs();
+            d.action = l.getAction();
+            d.summary = l.getSummary();
+            d.username = l.getUsername();
+            d.displayName = l.getDisplayName();
+            d.role = l.getRole();
+            d.module = l.getModule();
+            out.add(d);
+        }
+        return out;
+    }
+
     // ─────── Conflict check (sin guardar) ───────
 
     @PostMapping("/{id}/conflict-check")
@@ -704,5 +770,22 @@ public class PanelBotTableController {
         public String clientFirstName;
         public String clientLastName;
         public String messagesJson;   // JSON array crudo, frontend lo parsea
+    }
+
+    /**
+     * DTO para un evento de historial (audit log filtrado por entidad).
+     * Más liviano que AuditLogDetailDto: no incluye changesJson ni IP, que
+     * son para uso del módulo de auditoría completo en /admin.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class HistoryEventDto {
+        public Long id;
+        public Instant ts;
+        public String action;        // ej "reserva.status_change"
+        public String summary;       // ej "Cambió estado de PENDIENTE a CONFIRMADA"
+        public String username;      // login del usuario
+        public String displayName;   // nombre humano (si existe)
+        public String role;          // rol al momento (GERENTE, CAJA, DIOS)
+        public String module;        // "reserve" | "admin" | etc.
     }
 }

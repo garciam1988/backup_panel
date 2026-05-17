@@ -14,6 +14,28 @@ import java.time.Instant;
 public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
 
     /**
+     * Devuelve los logs asociados a una entidad específica (ej: una reserva
+     * particular), ordenados de más reciente a más viejo. Se usa para
+     * mostrar la trazabilidad inline en el modal de reserva en /reserve.
+     *
+     * Filtro por entityId solo — el caller puede agregar entityType si
+     * necesita mayor precisión cuando varios tipos comparten ID. Para
+     * reservas de Brasas no hay conflicto: el ID de bot_table_record es
+     * único globalmente.
+     */
+    @Query("""
+        SELECT a FROM AuditLog a
+        WHERE a.entityId = :entityId
+          AND (:entityType IS NULL OR a.entityType = :entityType)
+        ORDER BY a.ts DESC
+        """)
+    java.util.List<AuditLog> findByEntity(
+        @Param("entityId")   String entityId,
+        @Param("entityType") String entityType,
+        org.springframework.data.domain.Pageable pageable
+    );
+
+    /**
      * Query principal del módulo de auditoría. Filtros opcionales — si llegan
      * null, el WHERE los ignora. Resultados paginados, orden descendente
      * por timestamp.
