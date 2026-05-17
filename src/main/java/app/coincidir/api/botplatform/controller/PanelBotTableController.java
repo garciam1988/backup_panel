@@ -1,5 +1,6 @@
 package app.coincidir.api.botplatform.controller;
 
+import app.coincidir.api.audit.service.AuditService;
 import app.coincidir.api.botplatform.domain.BotTable;
 import app.coincidir.api.botplatform.domain.BotTableRecord;
 import app.coincidir.api.botplatform.repository.BotTableRecordRepository;
@@ -57,6 +58,7 @@ public class PanelBotTableController {
     private final PanelBotTableService panelService;
     private final ApplicationEventPublisher eventPublisher;
     private final ConversationLogRepository conversationLogRepo;
+    private final AuditService auditService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────── Tablas (sólo las que tienen panel habilitado) ───────
@@ -173,6 +175,21 @@ public class PanelBotTableController {
             rec = recordRepo.save(rec);
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created")); } catch (Exception ignored) {}
 
+            // Audit: registrar la creación en /reserve.
+            // Para reservas, el "entityType" más descriptivo es el nombre de la
+            // tabla (singular si se puede). Usamos el nombre de la BotTable.
+            try {
+                Map<String, Object> snap = jsonToMap(normalized);
+                auditService.logCreate(
+                    actionKey(t, "create"),
+                    entityTypeOf(t),
+                    String.valueOf(rec.getId()),
+                    buildEntityLabel(t, snap),
+                    "reserve",
+                    snap
+                );
+            } catch (Exception ignored) {}
+
             RecordSaveResponse rsp = new RecordSaveResponse();
             rsp.record = toRecordDto(rec);
             rsp.autoAssignedTableId = autoAssigned;
@@ -189,6 +206,12 @@ public class PanelBotTableController {
         BotTableRecord rec = recordRepo.findById(recordId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         BotTable t = requirePanelEnabled(rec.getTableId());
+
+        // Snapshot del estado PREVIO para el diff de auditoría. Lo tomamos
+        // antes de mergear cambios para que reflje exactamente lo que había.
+        Map<String, Object> auditOldSnap;
+        try { auditOldSnap = jsonToMap(rec.getDataJson()); }
+        catch (Exception e) { auditOldSnap = Collections.emptyMap(); }
 
         try {
             // Merge con dataJson actual
@@ -217,6 +240,43 @@ public class PanelBotTableController {
             rec = recordRepo.save(rec);
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); } catch (Exception ignored) {}
 
+            // Audit: calculamos el diff entre el snapshot previo y el nuevo.
+            // Si el único cambio es la columna de estado (single-column update),
+            // usamos un summary específico ("Cambió estado de X a Y") en vez del
+            // diff genérico — esto es la operación más común del CAJA.
+            try {
+                Map<String, Object> auditNewSnap = jsonToMap(normalized);
+                String statusCol = extractStatusColumn(t);
+                boolean statusOnlyChange = isStatusOnlyChange(auditOldSnap, auditNewSnap, statusCol);
+                if (statusOnlyChange) {
+                    Object oldSt = auditOldSnap.get(statusCol);
+                    Object newSt = auditNewSnap.get(statusCol);
+                    String summary = "Cambió estado de " +
+                        (oldSt != null ? oldSt : "sin asignar") +
+                        " a " + (newSt != null ? newSt : "sin asignar");
+                    auditService.logActionWithChanges(
+                        actionKey(t, "status_change"),
+                        entityTypeOf(t),
+                        String.valueOf(rec.getId()),
+                        buildEntityLabel(t, auditNewSnap),
+                        "reserve",
+                        summary,
+                        auditOldSnap,
+                        auditNewSnap
+                    );
+                } else {
+                    auditService.logUpdate(
+                        actionKey(t, "update"),
+                        entityTypeOf(t),
+                        String.valueOf(rec.getId()),
+                        buildEntityLabel(t, auditNewSnap),
+                        "reserve",
+                        auditOldSnap,
+                        auditNewSnap
+                    );
+                }
+            } catch (Exception ignored) {}
+
             RecordSaveResponse rsp = new RecordSaveResponse();
             rsp.record = toRecordDto(rec);
             return rsp;
@@ -234,6 +294,15 @@ public class PanelBotTableController {
         if (opt.isEmpty()) return;
         BotTableRecord rec = opt.get();
         BotTable t = tableRepo.findById(rec.getTableId()).orElse(null);
+
+        // Snapshot del estado previo para el audit log (antes de borrar).
+        Map<String, Object> auditOldSnap;
+        try { auditOldSnap = jsonToMap(rec.getDataJson()); }
+        catch (Exception e) { auditOldSnap = Collections.emptyMap(); }
+        String auditLabel = t != null ? buildEntityLabel(t, auditOldSnap) : null;
+        String auditEntityType = t != null ? entityTypeOf(t) : "Record";
+        String auditAction = t != null ? actionKey(t, "delete") : "record.delete";
+
         if (t != null) {
             // Disparamos "cancelled" (no "deleted") por consistencia con las otras
             // rutas de borrado: BotTableService.deleteRecord() (cuando el bot
@@ -246,6 +315,18 @@ public class PanelBotTableController {
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "cancelled")); } catch (Exception ignored) {}
         }
         recordRepo.deleteById(recordId);
+
+        // Audit: registramos la eliminación con el snapshot del estado previo.
+        try {
+            auditService.logDelete(
+                auditAction,
+                auditEntityType,
+                String.valueOf(recordId),
+                auditLabel,
+                "reserve",
+                auditOldSnap
+            );
+        } catch (Exception ignored) {}
     }
 
     // ─────── Conversación del bot asociada al record ───────
@@ -455,6 +536,111 @@ public class PanelBotTableController {
         d.createdAt = r.getCreatedAt();
         d.updatedAt = r.getUpdatedAt();
         return d;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Helpers de auditoría (privados a este controller)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Convierte el data_json de un record en Map para el audit log.
+     * Si el parse falla, devuelve mapa vacío en lugar de excepción —
+     * el audit no debe romper la operación principal.
+     */
+    private Map<String, Object> jsonToMap(String json) {
+        if (json == null || json.isBlank()) return Collections.emptyMap();
+        try {
+            JsonNode n = objectMapper.readTree(json);
+            if (n == null || !n.isObject()) return Collections.emptyMap();
+            return objectMapper.convertValue(n, Map.class);
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
+    }
+
+    /**
+     * Arma la clave de acción para el audit: {slugSingular}.{verbo}.
+     * Ej: tabla "reservas" + "update" → "reservation.update".
+     * Si no podemos singularizar, dejamos el slug tal cual.
+     */
+    private String actionKey(BotTable t, String verb) {
+        String slug = t.getSlug() != null ? t.getSlug() : "record";
+        // Simplificación: quitamos "s" final si termina en eso, para que
+        // "reservas" → "reserva". Es un hack pero suficiente para Brasas.
+        // Si quisiéramos algo más prolijo, agregaríamos un campo
+        // `singularName` en BotTable.
+        if (slug.length() > 2 && slug.endsWith("s")) slug = slug.substring(0, slug.length() - 1);
+        return slug + "." + verb;
+    }
+
+    /** EntityType para el audit, derivado del nombre de la tabla. */
+    private String entityTypeOf(BotTable t) {
+        if (t == null) return "Record";
+        return t.getName() != null && !t.getName().isBlank() ? t.getName() : "Record";
+    }
+
+    /**
+     * Arma una etiqueta legible para el log. Intenta tomar el primer campo
+     * "tipo nombre" (Nombre y Apellido, nombre, etc.) + un dato secundario
+     * útil (fecha si la tabla es de reservas).
+     *
+     * Si no encontramos buenos campos, fallback al ID.
+     */
+    private String buildEntityLabel(BotTable t, Map<String, Object> snap) {
+        if (snap == null || snap.isEmpty()) return null;
+        String name = pickFirstNonBlank(snap,
+            "Nombre y Apellido", "Nombre Y Apellido", "nombre", "name",
+            "Cliente", "cliente", "Razón Social"
+        );
+        String date = pickFirstNonBlank(snap,
+            "fecha_display", "Fecha Display", "Fecha y Hora Reserva", "fecha", "Fecha"
+        );
+        String parts;
+        if (name != null && date != null) parts = name + " — " + date;
+        else if (name != null) parts = name;
+        else if (date != null) parts = date;
+        else parts = null;
+        return parts;
+    }
+
+    /** Busca la primera key que tenga valor no vacío entre las opciones. */
+    private String pickFirstNonBlank(Map<String, Object> snap, String... keys) {
+        for (String k : keys) {
+            Object v = snap.get(k);
+            if (v == null) continue;
+            String s = String.valueOf(v).trim();
+            if (!s.isEmpty() && !"null".equals(s)) return s;
+        }
+        return null;
+    }
+
+    /** Extrae la columna de estado del panelConfig de la tabla, o null. */
+    private String extractStatusColumn(BotTable t) {
+        if (t == null || t.getPanelConfigJson() == null) return null;
+        try {
+            JsonNode cfg = objectMapper.readTree(t.getPanelConfigJson());
+            JsonNode cal = cfg.path("calendarConfig");
+            String s = cal.path("statusColumn").asText("");
+            return s.isEmpty() ? null : s;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * ¿El cambio entre old y new es SOLO en la columna de estado?
+     * Si sí, el audit usa un summary específico tipo "Cambió estado de X a Y".
+     */
+    private boolean isStatusOnlyChange(Map<String, Object> oldSnap, Map<String, Object> newSnap, String statusCol) {
+        if (statusCol == null || oldSnap == null || newSnap == null) return false;
+        Set<String> changed = new java.util.HashSet<>();
+        Set<String> allKeys = new java.util.HashSet<>();
+        allKeys.addAll(oldSnap.keySet());
+        allKeys.addAll(newSnap.keySet());
+        for (String k : allKeys) {
+            if (!Objects.equals(oldSnap.get(k), newSnap.get(k))) changed.add(k);
+        }
+        return changed.size() == 1 && changed.contains(statusCol);
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
