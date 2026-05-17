@@ -94,6 +94,15 @@ public class AuditService {
                 return;
             }
 
+            // IMPORTANTE: capturamos username, IP y user-agent SINCRÓNICAMENTE
+            // acá (en el thread del request), porque el listener corre @Async
+            // y ahí el SecurityContextHolder/RequestContextHolder ya no tiene
+            // datos (son ThreadLocals del thread original). Si no hacemos
+            // esto, todos los logs salen con username="system".
+            String capturedUsername = captureCurrentUsername();
+            String capturedIp = captureCurrentIp();
+            String capturedUserAgent = captureCurrentUserAgent();
+
             AuditEvent event = AuditEvent.builder()
                 .action(action)
                 .entityType(entityType)
@@ -104,6 +113,9 @@ public class AuditService {
                 .oldValue(oldValue)
                 .newValue(newValue)
                 .source(deduceSource(module))
+                .capturedUsername(capturedUsername)
+                .capturedIp(capturedIp)
+                .capturedUserAgent(capturedUserAgent)
                 .build();
 
             eventPublisher.publishEvent(event);
@@ -112,6 +124,48 @@ public class AuditService {
             // Si no podemos loguear, lo registramos en el log de Spring y seguimos.
             log.warn("[Audit] No se pudo publicar evento {} para {} id={}: {}",
                 action, entityType, entityId, e.getMessage());
+        }
+    }
+
+    /** Lee el username del SecurityContext del thread actual (síncrono). */
+    private String captureCurrentUsername() {
+        try {
+            org.springframework.security.core.Authentication auth =
+                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+            if (auth == null || !auth.isAuthenticated()) return null;
+            Object principal = auth.getPrincipal();
+            if ("anonymousUser".equals(principal)) return null;
+            return auth.getName();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Lee la IP del request actual (síncrono). */
+    private String captureCurrentIp() {
+        try {
+            ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+            if (attrs == null) return null;
+            HttpServletRequest req = attrs.getRequest();
+            String xfwd = req.getHeader("X-Forwarded-For");
+            if (xfwd != null && !xfwd.isBlank()) {
+                int comma = xfwd.indexOf(',');
+                return (comma > 0 ? xfwd.substring(0, comma) : xfwd).trim();
+            }
+            return req.getRemoteAddr();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Lee el User-Agent del request actual (síncrono). */
+    private String captureCurrentUserAgent() {
+        try {
+            ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+            if (attrs == null) return null;
+            return attrs.getRequest().getHeader("User-Agent");
+        } catch (Exception e) {
+            return null;
         }
     }
 

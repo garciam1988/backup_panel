@@ -58,4 +58,23 @@ public class AuditEvent {
      * filtros condicionales (ej: cuando una acción la dispara el bot mismo).
      */
     private boolean skip;
+
+    // ── Contexto del request capturado SINCRÓNICAMENTE ──
+    //
+    // El listener corre en un thread @Async distinto del request, donde el
+    // SecurityContextHolder y RequestContextHolder NO están disponibles
+    // (son ThreadLocals del thread original). Por eso el AuditService captura
+    // estos datos ANTES de publicar el evento y los inyecta acá.
+    //
+    // Si vienen null, el listener intenta usar SecurityContextHolder como
+    // fallback (caso de eventos generados por jobs schedulados).
+
+    /** Username del usuario que disparó la acción (capturado sincrónicamente). */
+    private String capturedUsername;
+
+    /** IP del cliente (de X-Forwarded-For o RemoteAddr). */
+    private String capturedIp;
+
+    /** User-Agent del request. */
+    private String capturedUserAgent;
 }

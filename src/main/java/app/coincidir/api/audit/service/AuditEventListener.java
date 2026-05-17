@@ -70,11 +70,11 @@ public class AuditEventListener {
             log.setModule(event.getModule());
             log.setSource(event.getSource() != null ? event.getSource() : event.getModule());
 
-            // ── Quién: resolvemos desde SecurityContext ──
-            resolveUser(log);
+            // ── Quién: resolvemos del evento (capturado sincrónicamente) ──
+            resolveUser(log, event);
 
-            // ── Contexto: IP y user-agent del request actual si está ──
-            resolveRequestContext(log);
+            // ── Contexto: IP y user-agent (capturado sincrónicamente) ──
+            resolveRequestContext(log, event);
 
             // ── Diff y summary ──
             Map<String, Object[]> diff = computeDiff(event.getOldValue(), event.getNewValue());
@@ -105,16 +105,32 @@ public class AuditEventListener {
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
-    private void resolveUser(AuditLog log) {
+    private void resolveUser(AuditLog log, AuditEvent event) {
         try {
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
-                // Acción del sistema (job, listener interno, request sin auth).
+            // Prioridad 1: username capturado SINCRÓNICAMENTE por el publisher.
+            // Este es el camino normal en requests HTTP — el SecurityContextHolder
+            // ya no funciona acá porque estamos en thread @Async distinto.
+            String username = event != null ? event.getCapturedUsername() : null;
+
+            // Prioridad 2: fallback a SecurityContextHolder. Esto solo aplica
+            // si el evento se publicó SIN pasar por AuditService.publish
+            // (caso muy raro — eventos de jobs schedulados que igual estén
+            // en el mismo thread, o callers que crean AuditEvent a mano).
+            if (username == null) {
+                Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+                if (auth != null && auth.isAuthenticated() && !"anonymousUser".equals(auth.getPrincipal())) {
+                    username = auth.getName();
+                }
+            }
+
+            if (username == null) {
+                // Verdadera acción del sistema (job nocturno, listener interno
+                // sin request HTTP de origen).
                 log.setUsername("system");
                 log.setRole("SYSTEM");
                 return;
             }
-            String username = auth.getName();
+
             log.setUsername(username);
             // Resolver userId + role real desde la BD (no del JWT) para tener
             // siempre el rol actualizado al momento del log.
@@ -123,10 +139,6 @@ public class AuditEventListener {
                 PanelUser u = userOpt.get();
                 log.setUserId(u.getId());
                 log.setRole(u.getRole());
-            } else {
-                // Usuario autenticado por JWT pero ya no existe en BD — raro
-                // pero posible si lo borraron en otra pestaña. Snapshot del JWT.
-                log.setRole(extractRoleFromAuth(auth));
             }
         } catch (Exception e) {
             // Si todo falla, al menos guardamos algo para no perder el evento.
@@ -148,16 +160,27 @@ public class AuditEventListener {
         }
     }
 
-    private void resolveRequestContext(AuditLog log) {
-        try {
-            ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-            if (attrs == null) return;
-            HttpServletRequest req = attrs.getRequest();
-            log.setIpAddress(extractClientIp(req));
-            String ua = req.getHeader("User-Agent");
-            if (ua != null) log.setUserAgent(truncate(ua, 300));
-        } catch (Exception e) {
-            // sin request scope, ej: jobs
+    private void resolveRequestContext(AuditLog log, AuditEvent event) {
+        // Prioridad 1: usar el contexto capturado sincrónicamente
+        if (event != null) {
+            if (event.getCapturedIp() != null) log.setIpAddress(event.getCapturedIp());
+            if (event.getCapturedUserAgent() != null) log.setUserAgent(truncate(event.getCapturedUserAgent(), 300));
+        }
+        // Prioridad 2: si no vino capturado, intentar leerlo (fallback raro)
+        if (log.getIpAddress() == null || log.getUserAgent() == null) {
+            try {
+                ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+                if (attrs != null) {
+                    HttpServletRequest req = attrs.getRequest();
+                    if (log.getIpAddress() == null) log.setIpAddress(extractClientIp(req));
+                    if (log.getUserAgent() == null) {
+                        String ua = req.getHeader("User-Agent");
+                        if (ua != null) log.setUserAgent(truncate(ua, 300));
+                    }
+                }
+            } catch (Exception e) {
+                // sin request scope
+            }
         }
     }
 
