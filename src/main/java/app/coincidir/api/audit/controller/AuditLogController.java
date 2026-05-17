@@ -129,12 +129,22 @@ public class AuditLogController {
             .filter(Objects::nonNull)
             .distinct().sorted().limit(50)
             .collect(Collectors.toList()));
-        // Usuarios con al menos 1 log
+        // Usuarios con al menos 1 log. Devolvemos displayName + username para
+        // que el frontend muestre "Ana Mello (ana)" o lo que considere mejor.
+        // Si el log tiene varios entries del mismo userId pero con distinto
+        // displayName (el user cambió de nombre), nos quedamos con el primero
+        // que aparece — es suficiente para un select.
         out.put("users", repo.findAll().stream()
             .filter(l -> l.getUserId() != null)
             .collect(Collectors.toMap(
                 AuditLog::getUserId,
-                l -> Map.of("id", l.getUserId(), "username", l.getUsername() != null ? l.getUsername() : "?"),
+                l -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("id", l.getUserId());
+                    m.put("username", l.getUsername() != null ? l.getUsername() : "?");
+                    if (l.getDisplayName() != null) m.put("displayName", l.getDisplayName());
+                    return m;
+                },
                 (a, b) -> a))
             .values());
         return out;
@@ -169,10 +179,11 @@ public class AuditLogController {
                                             fromIns, toIns, qNorm, pageable);
 
         StringBuilder sb = new StringBuilder();
-        sb.append("fecha,usuario,rol,modulo,accion,entidad,id_entidad,resumen,ip\n");
+        sb.append("fecha,usuario,nombre,rol,modulo,accion,entidad,id_entidad,resumen,ip\n");
         for (AuditLog l : result.getContent()) {
             sb.append(csvField(l.getTs() != null ? l.getTs().toString() : "")).append(",");
             sb.append(csvField(l.getUsername())).append(",");
+            sb.append(csvField(l.getDisplayName())).append(",");
             sb.append(csvField(l.getRole())).append(",");
             sb.append(csvField(l.getModule())).append(",");
             sb.append(csvField(l.getAction())).append(",");
@@ -245,6 +256,7 @@ public class AuditLogController {
         d.ts = l.getTs();
         d.userId = l.getUserId();
         d.username = l.getUsername();
+        d.displayName = l.getDisplayName();
         d.role = l.getRole();
         d.action = l.getAction();
         d.entityType = l.getEntityType();
@@ -265,6 +277,7 @@ public class AuditLogController {
         d.ts = l.getTs();
         d.userId = l.getUserId();
         d.username = l.getUsername();
+        d.displayName = l.getDisplayName();
         d.role = l.getRole();
         d.action = l.getAction();
         d.entityType = l.getEntityType();
@@ -287,6 +300,7 @@ public class AuditLogController {
         public Instant ts;
         public Long userId;
         public String username;
+        public String displayName;
         public String role;
         public String action;
         public String entityType;

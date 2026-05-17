@@ -53,6 +53,15 @@ public class AuditLog {
     @Column(name = "username", length = 80)
     private String username;
 
+    /**
+     * Snapshot del displayName del usuario al momento. Si el usuario no tiene
+     * displayName seteado en panel_user, queda null y el frontend cae al
+     * username como fallback. Esto da una UX más natural ("Ana Mello" vs "ana")
+     * sin romper compatibilidad con logs viejos.
+     */
+    @Column(name = "display_name", length = 120)
+    private String displayName;
+
     /** Snapshot del rol al momento. */
     @Column(name = "role", length = 60)
     private String role;

@@ -132,13 +132,18 @@ public class AuditEventListener {
             }
 
             log.setUsername(username);
-            // Resolver userId + role real desde la BD (no del JWT) para tener
-            // siempre el rol actualizado al momento del log.
+            // Resolver userId + role + displayName real desde la BD (no del JWT)
+            // para tener siempre la info actualizada al momento del log.
             Optional<PanelUser> userOpt = userRepo.findByUsername(username);
             if (userOpt.isPresent()) {
                 PanelUser u = userOpt.get();
                 log.setUserId(u.getId());
                 log.setRole(u.getRole());
+                // displayName puede ser null si el usuario nunca lo seteó;
+                // el frontend cae al username como fallback.
+                if (u.getDisplayName() != null && !u.getDisplayName().isBlank()) {
+                    log.setDisplayName(u.getDisplayName().trim());
+                }
             }
         } catch (Exception e) {
             // Si todo falla, al menos guardamos algo para no perder el evento.
