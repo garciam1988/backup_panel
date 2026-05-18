@@ -274,9 +274,19 @@ public class BotTableEmailService {
         return out.toString();
     }
 
-    /** Placeholders que devuelven URLs y por lo tanto NO deben escaparse como HTML. */
+    /**
+     * Placeholders que devuelven contenido especial y por lo tanto NO deben
+     * escaparse como HTML al sustituirse en el template:
+     *  - _logoUrl: devuelve una URL (escapar "&" rompería querystrings).
+     *  - _observacionesBlock: devuelve un bloque HTML pre-armado por el
+     *    backend (escapar lo convertiría en texto plano feo).
+     *
+     * Para estos placeholders el caller ya garantiza la seguridad — en el
+     * caso de _observacionesBlock escapamos los valores del usuario ANTES
+     * de meterlos en el HTML, así no hay riesgo de XSS.
+     */
     private static boolean isUrlPlaceholder(String key) {
-        return "_logoUrl".equals(key);
+        return "_logoUrl".equals(key) || "_observacionesBlock".equals(key);
     }
 
     private String resolvePlaceholder(String key, JsonNode data, BotTable table) {
@@ -342,11 +352,123 @@ public class BotTableEmailService {
             return LocalDateTime.now(ZoneId.systemDefault())
                     .format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
         }
+        if ("_observacionesBlock".equals(key)) {
+            // Bloque HTML pre-armado con la información de ocasión especial,
+            // observaciones y restricciones alimentarias. Lo devolvemos como
+            // string vacío si no hay nada que mostrar, así no aparece una
+            // sección con labels sin valor.
+            //
+            // El motor de templates actual no soporta condicionales tipo
+            // {{#if}}...{{/if}}, así que esta lógica vive en el backend. La
+            // ventaja: el HTML del template queda 1 línea más limpia y el
+            // diseño visual lo mantenemos consistente desde acá.
+            return renderObservacionesBlock(data);
+        }
         // Campo del registro
         JsonNode v = data.get(key);
         if (v == null || v.isNull()) return "";
         if (v.isBoolean()) return v.asBoolean() ? "Sí" : "No";
         return formatValueForDisplay(v);
+    }
+
+    /**
+     * Arma el bloque HTML "Notas y preferencias" para el email, combinando
+     * ocasion_especial, observaciones, y los booleanos legacy (vegetariano,
+     * diabetico, celiaco) si existen.
+     *
+     * Devuelve "" (string vacío) si no hay NADA que mostrar — así el template
+     * no renderiza una sección con labels en blanco.
+     *
+     * El HTML que devuelve sigue el mismo estilo del bloque "Detalles de tu
+     * reserva" del email para que se vea consistente.
+     */
+    private String renderObservacionesBlock(JsonNode data) {
+        if (data == null) return "";
+
+        // Diccionario "amigable" de ocasiones especiales — el bot guarda
+        // valores cerrados (cumpleaños, aniversario, etc) pero al cliente
+        // queremos mostrarle algo lindo.
+        java.util.Map<String, String> ocasionLabels = new java.util.HashMap<>();
+        ocasionLabels.put("cumpleaños", "🎂 Cumpleaños");
+        ocasionLabels.put("aniversario", "💕 Aniversario");
+        ocasionLabels.put("cita", "💕 Cita");
+        ocasionLabels.put("negocios", "💼 Reunión de negocios");
+        ocasionLabels.put("despedida", "🎉 Despedida");
+        ocasionLabels.put("celebracion_grupo", "✨ Celebración grupal");
+        ocasionLabels.put("otra", "✨ Ocasión especial");
+
+        java.util.List<String> rows = new java.util.ArrayList<>();
+
+        // 1) Ocasión especial — usar diccionario para mostrar emoji + label legible
+        String ocasion = readText(data, "ocasion_especial");
+        if (ocasion != null && !ocasion.isBlank()) {
+            String label = ocasionLabels.getOrDefault(ocasion.toLowerCase().trim(), "✨ " + ocasion);
+            rows.add(row("Ocasión", label));
+        }
+
+        // 2) Booleanos legacy (vegetariano, diabético, celíaco) — solo si están en true.
+        //    Si están en false los omitimos (no aporta info útil al cliente decir
+        //    "diabético: No"). Si no existen como columnas, también omitir.
+        if (isTrue(data, "vegetariano")) rows.add(row("🥗 Vegetariano", "Sí"));
+        if (isTrue(data, "diabetico"))   rows.add(row("🩺 Diabético", "Sí"));
+        if (isTrue(data, "celiaco"))     rows.add(row("🌾 Celíaco", "Sí"));
+
+        // 3) Observaciones libres — el texto descriptivo que el bot completó
+        //    con todo lo que el cliente mencionó (ocasión + restricciones +
+        //    preferencias). Va en una fila aparte porque puede ser texto largo.
+        String obs = readText(data, "observaciones");
+        if (obs != null && !obs.isBlank()) {
+            String safeObs = obs.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+            rows.add(
+                "<tr><td style=\"padding:6px 0;color:#666;width:42%;vertical-align:top;\">📝 Notas</td>" +
+                "<td style=\"padding:6px 0;font-weight:600;line-height:1.5;\">" + safeObs + "</td></tr>"
+            );
+        }
+
+        // Si no hay NADA para mostrar, devolvemos vacío. El template queda
+        // sin la sección y el email se ve más limpio.
+        if (rows.isEmpty()) return "";
+
+        // Wrapper visual — mismo estilo que el bloque "Detalles" para mantener
+        // consistencia. Card con padding y borde a la izquierda.
+        StringBuilder html = new StringBuilder();
+        html.append("<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background-color:#fef7ed;border-left:4px solid #f59e0b;border-radius:6px;margin-top:6px;\">");
+        html.append("<tr><td style=\"padding:18px 22px;\">");
+        html.append("<div style=\"font-size:11px;color:#92400e;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;\">✨ Notas y preferencias</div>");
+        html.append("<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:14px;color:#1a1a1a;\">");
+        for (String r : rows) html.append(r);
+        html.append("</table>");
+        html.append("</td></tr>");
+        html.append("</table>");
+        return html.toString();
+    }
+
+    /** Helper: fila clave/valor del bloque de observaciones. */
+    private String row(String label, String value) {
+        String safe = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        return "<tr><td style=\"padding:6px 0;color:#666;width:42%;\">" + label + "</td>" +
+               "<td style=\"padding:6px 0;font-weight:bold;\">" + safe + "</td></tr>";
+    }
+
+    /** Lee un campo como texto, devolviendo null si no existe o es null. */
+    private String readText(JsonNode data, String key) {
+        if (data == null) return null;
+        JsonNode v = data.get(key);
+        if (v == null || v.isNull()) return null;
+        return v.asText();
+    }
+
+    /** True si el campo existe y es un boolean true (o el string "true"/"sí"). */
+    private boolean isTrue(JsonNode data, String key) {
+        if (data == null) return false;
+        JsonNode v = data.get(key);
+        if (v == null || v.isNull()) return false;
+        if (v.isBoolean()) return v.asBoolean();
+        if (v.isTextual()) {
+            String s = v.asText().toLowerCase().trim();
+            return "true".equals(s) || "sí".equals(s) || "si".equals(s) || "yes".equals(s);
+        }
+        return false;
     }
 
     /**
