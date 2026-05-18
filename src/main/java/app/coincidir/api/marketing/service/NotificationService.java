@@ -1,5 +1,6 @@
 package app.coincidir.api.marketing.service;
 
+import app.coincidir.api.email.EmailInlineImageHelper;
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
 import app.coincidir.api.marketing.domain.NotificationLog;
 import app.coincidir.api.marketing.repository.LoyaltyCustomerRepository;
@@ -112,11 +113,24 @@ public class NotificationService {
 
         try {
             MimeMessage msg = mailSender.createMimeMessage();
+            // multipart=true es necesario para soportar imágenes inline (CID).
+            // EmailInlineImageHelper detecta data URLs en el HTML y las adjunta
+            // como recursos inline. Si no hay data URLs, el helper no agrega
+            // nada y el MIME queda con el HTML solo — comportamiento idéntico
+            // al anterior para emails sin imágenes embebidas.
+            //
+            // Sin esto, los logos en base64 del header (que vienen de
+            // bot_config.logo_url como data URL) se rompen en Gmail web/app,
+            // que bloquea data URLs por seguridad. Apple Mail y Outlook
+            // desktop sí los renderizan, pero Gmail es ~40% del mercado.
             MimeMessageHelper helper = new MimeMessageHelper(msg, true, "UTF-8");
             helper.setFrom(mailFrom);
             helper.setTo(customer.getEmail());
             helper.setSubject(subject);
-            helper.setText(htmlBody, true);
+            int inlineCount = EmailInlineImageHelper.applyInline(helper, htmlBody);
+            if (inlineCount > 0) {
+                log.debug("Email a customer={} con {} imagen(es) inline", customerId, inlineCount);
+            }
             mailSender.send(msg);
 
             n.setStatus(NotificationLog.Status.SENT);
