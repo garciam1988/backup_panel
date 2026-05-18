@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
@@ -27,6 +28,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Optional;
@@ -219,10 +221,23 @@ public class BotTableEmailService {
         String subject = renderTemplate(tpl.getSubject(), data, table);
         String body = renderTemplate(tpl.getBodyHtml(), data, table);
 
-        // 7) Construir y enviar
+        // 7) Construir y enviar.
+        //
+        // Convertimos cualquier `<img src="data:image/...">` del HTML renderizado
+        // en imágenes inline referenciadas por CID. Gmail no renderiza data URLs
+        // en el body del email (lo bloquea por seguridad), así que sin esto el
+        // logo del cliente aparece como "imagen rota" en Gmail web/app. Apple
+        // Mail y Outlook sí renderizan ambos formatos, así que esto solo mejora;
+        // no rompe nada existente.
         try {
+            InlineImageResult inline = extractInlineImages(body);
+            boolean hasInlineImages = !inline.images.isEmpty();
+
             MimeMessage msg = mailSender.createMimeMessage();
-            MimeMessageHelper h = new MimeMessageHelper(msg, false, "UTF-8");
+            // multipart=true solo si hay inline images. Si no, mantenemos
+            // multipart=false como antes para no cambiar la forma del MIME de
+            // los emails que ya andaban bien.
+            MimeMessageHelper h = new MimeMessageHelper(msg, hasInlineImages, "UTF-8");
 
             // From: si el template tiene fromDisplayName, usamos eso con el email default.
             //   "Brasas Argentinas <info@yes-traveluy.com>"
@@ -241,7 +256,13 @@ public class BotTableEmailService {
             }
 
             h.setSubject(subject);
-            h.setText(body, true);
+            h.setText(inline.html, true);
+            // addInline DEBE llamarse DESPUÉS de setText. Si no, Spring Mail
+            // arma el MIME en orden incorrecto y el cliente no encuentra los
+            // recursos cuando renderiza el HTML.
+            for (InlineImage img : inline.images) {
+                h.addInline(img.cid, new ByteArrayResource(img.bytes), img.contentType);
+            }
             mailSender.send(msg);
             writeLog(table, record, tpl, event, recipient, true, null);
             log.info("[BotTableEmail] enviado: tabla={} record={} evento={} a={}",
@@ -272,6 +293,82 @@ public class BotTableEmailService {
         }
         m.appendTail(out);
         return out.toString();
+    }
+
+    /**
+     * Resultado de procesar el HTML para extraer data URLs y convertirlas en
+     * imágenes inline referenciadas por CID. Si no se encontró ninguna data URL,
+     * el HTML queda igual y la lista de imágenes está vacía.
+     */
+    static class InlineImageResult {
+        final String html;
+        final java.util.List<InlineImage> images;
+        InlineImageResult(String html, java.util.List<InlineImage> images) {
+            this.html = html;
+            this.images = images;
+        }
+    }
+
+    static class InlineImage {
+        final String cid;
+        final byte[] bytes;
+        final String contentType;
+        InlineImage(String cid, byte[] bytes, String contentType) {
+            this.cid = cid; this.bytes = bytes; this.contentType = contentType;
+        }
+    }
+
+    /**
+     * Detecta data URLs en atributos `src="data:image/...;base64,..."` dentro
+     * del HTML y los convierte en referencias `cid:` para que el mail sender
+     * los adjunte como imágenes inline.
+     *
+     * Por qué: Gmail (web y app) NO renderiza `<img src="data:...">` por
+     * razones de seguridad. Si el cliente abre el email en Gmail, el logo
+     * se rompe (ícono de imagen no cargada). Apple Mail, Outlook desktop y
+     * Thunderbird sí los renderizan, pero Gmail es ~40% del mercado.
+     *
+     * Solución: extraer los data URLs, asignarles un CID único, reemplazar
+     * el atributo src por `cid:<id>`, y devolver los bytes para que el caller
+     * los agregue como inline al MIME. Gmail SÍ renderiza CID embedded
+     * porque las imágenes son parte del MIME del email (no recursos externos).
+     *
+     * Soporta múltiples imágenes en el mismo email (cada una con su CID).
+     * Si una data URL está malformada, la deja como estaba y sigue (no rompe
+     * el envío del email entero por una imagen mala).
+     */
+    InlineImageResult extractInlineImages(String html) {
+        if (html == null || html.isEmpty()) return new InlineImageResult(html, java.util.List.of());
+        // Match src="data:image/xxx;base64,YYY" — soporta comillas dobles y simples,
+        // distintos formatos de imagen y data URLs sin charset.
+        Pattern dataUrlPattern = Pattern.compile(
+            "src\\s*=\\s*([\"'])(data:image/([a-zA-Z0-9+.-]+)(?:;[^,\"']*)?,([A-Za-z0-9+/=\\s]+?))\\1",
+            Pattern.DOTALL
+        );
+        Matcher m = dataUrlPattern.matcher(html);
+        StringBuilder out = new StringBuilder();
+        java.util.List<InlineImage> images = new java.util.ArrayList<>();
+        int counter = 0;
+        while (m.find()) {
+            String quote = m.group(1);
+            String mimeSubtype = m.group(3);
+            String base64Data = m.group(4).replaceAll("\\s", ""); // base64 puede venir con saltos de línea
+            try {
+                byte[] bytes = Base64.getDecoder().decode(base64Data);
+                String cid = "inline-img-" + (++counter);
+                String contentType = "image/" + mimeSubtype.toLowerCase(Locale.ROOT);
+                images.add(new InlineImage(cid, bytes, contentType));
+                // Reemplazar src="data:..." por src="cid:inline-img-N"
+                String replacement = "src=" + quote + "cid:" + cid + quote;
+                m.appendReplacement(out, Matcher.quoteReplacement(replacement));
+            } catch (IllegalArgumentException e) {
+                // Base64 malformado — dejamos la data URL original y seguimos
+                log.debug("[BotTableEmail] data URL malformada en HTML, se deja como está: {}", e.getMessage());
+                m.appendReplacement(out, Matcher.quoteReplacement(m.group(0)));
+            }
+        }
+        m.appendTail(out);
+        return new InlineImageResult(out.toString(), images);
     }
 
     /**
@@ -557,8 +654,13 @@ public class BotTableEmailService {
         String body = renderTemplate(tpl.getBodyHtml(), data, table);
 
         try {
+            // Mismo tratamiento de data URLs → CID que en el envío real.
+            // Sin esto, los emails de "Probar" no renderizan el logo en Gmail.
+            InlineImageResult inline = extractInlineImages(body);
+            boolean hasInlineImages = !inline.images.isEmpty();
+
             MimeMessage msg = mailSender.createMimeMessage();
-            MimeMessageHelper h = new MimeMessageHelper(msg, false, "UTF-8");
+            MimeMessageHelper h = new MimeMessageHelper(msg, hasInlineImages, "UTF-8");
 
             String from = defaultMailFrom;
             if (tpl.getFromDisplayName() != null && !tpl.getFromDisplayName().isBlank()) {
@@ -575,7 +677,10 @@ public class BotTableEmailService {
             // Le agregamos un prefijo "[TEST]" al subject para que el admin
             // distinga el mail real de los de prueba en su casilla.
             h.setSubject("[TEST] " + subject);
-            h.setText(body, true);
+            h.setText(inline.html, true);
+            for (InlineImage img : inline.images) {
+                h.addInline(img.cid, new ByteArrayResource(img.bytes), img.contentType);
+            }
             mailSender.send(msg);
             writeLog(table, record, tpl, "test", recipient, true, null);
             log.info("[BotTableEmail] TEST enviado: tabla={} a={}", table.getSlug(), recipient);
