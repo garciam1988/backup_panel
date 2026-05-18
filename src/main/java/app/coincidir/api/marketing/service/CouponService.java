@@ -19,7 +19,10 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * CouponService — CRUD de cupones + validación + aplicación.
@@ -93,6 +96,29 @@ public class CouponService {
             })
             .toList();
     }
+
+    /**
+     * Lista los usos recientes de cupones de un cliente, junto con el Coupon
+     * resuelto para cada uso. Devuelve pares (use, coupon) ya joinados en
+     * memoria para que el caller pueda armar el DTO sin hacer N+1 queries.
+     *
+     * El cupón puede venir null si fue eliminado de la BD después del uso —
+     * eso no debería pasar (Coupon es soft-relación) pero defendemos.
+     */
+    public List<CouponUseWithCoupon> recentUsesForCustomer(Long customerId) {
+        List<CouponUse> uses = couponUseRepo.findByCustomerIdOrderByUsedAtDesc(customerId);
+        if (uses.isEmpty()) return List.of();
+        // Cargo todos los coupons referenciados en un solo query para evitar N+1.
+        Set<Long> couponIds = uses.stream().map(CouponUse::getCouponId).collect(Collectors.toSet());
+        Map<Long, Coupon> coupons = couponRepo.findAllById(couponIds).stream()
+            .collect(Collectors.toMap(Coupon::getId, c -> c));
+        return uses.stream()
+            .map(u -> new CouponUseWithCoupon(u, coupons.get(u.getCouponId())))
+            .toList();
+    }
+
+    /** Par de CouponUse + Coupon, listo para construir DTOs sin lookups extras. */
+    public record CouponUseWithCoupon(CouponUse use, Coupon coupon) {}
 
     @Transactional
     public Coupon create(Coupon c) {

@@ -186,6 +186,27 @@ public class MarketingDtos {
 
     // ── TRANSACTION ──────────────────────────────────────────────────────
 
+    /**
+     * TransactionDto — Entrada del feed unificado "Tu historial".
+     *
+     * Originalmente representaba solo filas de loyalty_transaction. Para que
+     * el cliente vea TODO su movimiento (estampillas, premios canjeados,
+     * cupones aplicados) en un único feed cronológico, ahora también lo
+     * usamos como wrapper genérico:
+     *
+     *   - Para estampillas/puntos/cashback: transactionType viene de
+     *     loyalty_transaction.transaction_type (stamp_earn, redeem_reward, etc).
+     *   - Para cupones aplicados: transactionType = "coupon_applied", deltas
+     *     en 0 (los cupones son descuentos en pesos, no en stamps/puntos),
+     *     contextName = nombre del cupón, contextCode = código del cupón.
+     *
+     * Los campos contextName / contextCode / contextDiscount son opcionales:
+     *   - Para "redeem_reward": contextName = nombre del premio
+     *   - Para "coupon_applied": contextName = nombre del cupón, contextCode
+     *     = código (BIENVENIDO), contextDiscount = monto descontado
+     *
+     * Esto evita que el frontend tenga que hacer lookups adicionales.
+     */
     public record TransactionDto(
         Long id,
         String transactionType,
@@ -196,13 +217,44 @@ public class MarketingDtos {
         BigDecimal purchaseAmount,
         String source,
         String notes,
-        Instant createdAt
+        Instant createdAt,
+        String contextName,
+        String contextCode,
+        BigDecimal contextDiscount
     ) {
         public static TransactionDto fromEntity(LoyaltyTransaction t) {
+            return fromEntity(t, null);
+        }
+
+        /** Variante con nombre de premio resuelto (para redeem_reward). */
+        public static TransactionDto fromEntity(LoyaltyTransaction t, String rewardName) {
             return new TransactionDto(t.getId(), t.getTransactionType(),
                 t.getStampsDelta(), t.getPointsDelta(), t.getCashbackDelta(),
                 t.getBranchId(), t.getPurchaseAmount(),
-                t.getSource(), t.getNotes(), t.getCreatedAt());
+                t.getSource(), t.getNotes(), t.getCreatedAt(),
+                rewardName, null, null);
+        }
+
+        /**
+         * Adapta un CouponUse al feed de transacciones para que la PWA pueda
+         * renderizarlo junto con el resto del historial. Le damos un id
+         * negativo (-couponUseId) para no colisionar con ids de loyalty_transaction
+         * que son positivos; el frontend solo lo usa como key de React.
+         */
+        public static TransactionDto fromCouponUse(CouponUse use, Coupon coupon) {
+            return new TransactionDto(
+                -use.getId(),                       // id negativo para evitar colisión con ids de loyalty_transaction
+                "coupon_applied",
+                0, 0, BigDecimal.ZERO,              // los cupones no mueven stamps/puntos/cashback
+                use.getUsedBranch(),
+                use.getPurchaseAmount(),
+                "staff_app",
+                null,
+                use.getUsedAt(),
+                coupon != null ? coupon.getName() : null,
+                coupon != null ? coupon.getCode() : null,
+                use.getDiscountApplied()
+            );
         }
     }
 

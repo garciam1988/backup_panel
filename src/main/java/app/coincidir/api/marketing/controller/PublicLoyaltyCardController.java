@@ -106,9 +106,13 @@ public class PublicLoyaltyCardController {
                 .toList();
 
             // Pre-cargo los rewards en un map para evitar N+1 al armar el DTO.
+            // Necesito tanto los rewards activos como los borrados (porque puede
+            // haber transacciones históricas que referencien premios ya dados de
+            // baja). Para esos hago lookup individual.
             var rewardsById = allRewards.stream()
                 .collect(java.util.stream.Collectors.toMap(
                     app.coincidir.api.marketing.domain.LoyaltyReward::getId, r -> r));
+
             // Pueden quedar redemptions cuyo reward fue dado de baja: lo buscamos
             // individualmente como fallback.
             var myRedemptions = allRedemptions.stream()
@@ -121,12 +125,49 @@ public class PublicLoyaltyCardController {
                 })
                 .toList();
 
+            // ── Feed unificado de actividad ─────────────────────────────
+            //
+            // El cliente quiere ver TODO en un solo historial: estampillas
+            // ganadas, premios canjeados (con su nombre) y cupones aplicados.
+            // Acá fusionamos dos fuentes:
+            //   1. loyalty_transaction → stamp_earn / redeem_reward / etc.
+            //      Para redeem_reward agregamos el nombre del premio.
+            //   2. coupon_use → cada vez que un mozo aplicó un cupón.
+            //      Lo representamos como un "coupon_applied" sintético.
+            //
+            // Después ordenamos todo por fecha desc y devolvemos los más
+            // recientes. No paginamos: la PWA muestra los últimos 20 y
+            // alcanza para el feed home.
+            var txDtos = recent.stream()
+                .map(t -> {
+                    String rewardName = null;
+                    if ("redeem_reward".equals(t.getTransactionType()) && t.getRewardId() != null) {
+                        var reward = rewardsById.get(t.getRewardId());
+                        if (reward == null) {
+                            reward = rewardService.findById(t.getRewardId()).orElse(null);
+                        }
+                        if (reward != null) rewardName = reward.getName();
+                    }
+                    return TransactionDto.fromEntity(t, rewardName);
+                });
+
+            var couponUses = couponService.recentUsesForCustomer(cust.getId());
+            var couponDtos = couponUses.stream()
+                .map(pair -> TransactionDto.fromCouponUse(pair.use(), pair.coupon()));
+
+            var recentActivity = java.util.stream.Stream.concat(txDtos, couponDtos)
+                .sorted(java.util.Comparator.comparing(
+                    TransactionDto::createdAt,
+                    java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())))
+                .limit(30)
+                .toList();
+
             return ResponseEntity.ok((Object) new PublicCardView(
                 ProgramDto.fromEntity(program),
                 CustomerDto.fromEntity(cust),
                 CardDto.fromEntity(card),
                 availableRewards,
-                recent.stream().map(TransactionDto::fromEntity).toList(),
+                recentActivity,
                 myRedemptions
             ));
         }).orElse(ResponseEntity.notFound().build());
