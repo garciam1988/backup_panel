@@ -137,9 +137,39 @@ public class PublicConversationLogController {
             e.setHadReservation(Boolean.FALSE);
         }
 
-        // Contenido — siempre se actualiza con el último estado.
-        e.setMessagesJson(body.messagesJson);
-        e.setMessageCount(body.messageCount != null ? body.messageCount : 0);
+        // Contenido — política anti-pisada:
+        //
+        // El cliente puede mandar varios POSTs durante la misma conversación
+        // (in_progress, tool_..., timeout, beforeunload). Idealmente cada POST
+        // trae el buffer COMPLETO acumulado. Pero hay casos donde el buffer
+        // local del frontend se reinicia (refresh de página, navegación SPA,
+        // sessionStorage vs localStorage) y un POST tardío llega con un buffer
+        // CORTO que pisa lo previamente guardado. Resultado: el admin abre
+        // "Conversaciones" y solo ve 2 mensajes cuando la charla real tuvo 30.
+        //
+        // Política defensiva: si lo que llega tiene MENOS mensajes que lo
+        // que ya está guardado para este visitorId, conservamos lo más largo.
+        // El caso normal (más mensajes que antes) sí actualiza. Caso especial:
+        // una señal de reserva (tool_*) siempre actualiza, porque el bot
+        // probablemente reseteo buffer post-reserva y eso es información útil
+        // que sí queremos guardar.
+        String existingMessagesJson = isUpdate ? e.getMessagesJson() : null;
+        boolean shouldOverwrite = true;
+        if (isUpdate && existingMessagesJson != null && body.messagesJson != null) {
+            int existingCount = countMessagesInJson(existingMessagesJson);
+            int incomingCount = countMessagesInJson(body.messagesJson);
+            // Solo bloqueamos la pisada si la diferencia es estrictamente
+            // hacia menos. Igual o más mensajes => actualizar normal.
+            if (incomingCount < existingCount && !isReservationSignal) {
+                shouldOverwrite = false;
+                log.info("[public] anti-pisada: incoming={} msgs < existing={} msgs (visitor={}), conservando previo",
+                    incomingCount, existingCount, body.visitorId);
+            }
+        }
+        if (shouldOverwrite) {
+            e.setMessagesJson(body.messagesJson);
+            e.setMessageCount(body.messageCount != null ? body.messageCount : 0);
+        }
         e.setClosedReason(incomingReason);
         e.setIsAnonymous(e.getClientFirstName() == null && e.getClientLastName() == null);
         e.setEndedAt(body.endedAt != null ? body.endedAt : Instant.now());
@@ -160,6 +190,22 @@ public class PublicConversationLogController {
 
     private static String nullIfBlank(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
+    /**
+     * Cuenta cuántos mensajes hay en un JSON array. Si el JSON está mal
+     * formado o no es un array, devuelve 0 (defensivo). Lo usamos en la
+     * política anti-pisada para no perder transcripts largos cuando un POST
+     * tardío llega con un buffer vacío o corto.
+     */
+    private int countMessagesInJson(String json) {
+        if (json == null || json.isBlank()) return 0;
+        try {
+            JsonNode node = objectMapper.readTree(json);
+            return node.isArray() ? node.size() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /**
