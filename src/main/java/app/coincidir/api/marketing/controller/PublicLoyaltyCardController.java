@@ -163,10 +163,14 @@ public class PublicLoyaltyCardController {
      */
     @GetMapping("/card/{customerHash}/coupons")
     public ResponseEntity<?> getCoupons(@PathVariable String customerHash) {
-        if (customerService.findByHash(customerHash).isEmpty()) {
+        var custOpt = customerService.findByHash(customerHash);
+        if (custOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-        var active = couponService.listActiveNow();
+        // Filtramos por cliente: los cupones de uso único que ya consumió no
+        // aparecen más. Apenas el mozo aplica el cupón en su Staff App, el
+        // próximo reload de la PWA del cliente lo va a omitir automáticamente.
+        var active = couponService.listActiveNowForCustomer(custOpt.get().getId());
         return ResponseEntity.ok(active.stream().map(CouponDto::fromEntity).toList());
     }
 

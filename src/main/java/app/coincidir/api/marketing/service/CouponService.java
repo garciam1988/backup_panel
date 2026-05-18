@@ -64,6 +64,36 @@ public class CouponService {
         return couponRepo.findActiveAt(java.time.Instant.now());
     }
 
+    /**
+     * Versión filtrada por cliente: oculta los cupones que ESTE cliente ya
+     * no puede usar más, considerando el tipo de uso del cupón:
+     *
+     *   - SINGLE_USE_GLOBAL: ya filtrado por listActiveNow() si currentUses >= 1.
+     *   - SINGLE_USE_PER_CUSTOMER: oculto si este cliente ya lo usó al menos 1 vez.
+     *   - MULTI_USE_PER_CUSTOMER: oculto si este cliente alcanzó maxUsesPerCustomer.
+     *
+     * Resultado: en cuanto el mozo aplica el cupón en el local, en el próximo
+     * refresh del cliente el cupón desaparece automáticamente de su PWA si era
+     * de uso único, o se mantiene si todavía le quedan usos disponibles.
+     */
+    public List<Coupon> listActiveNowForCustomer(Long customerId) {
+        List<Coupon> base = listActiveNow();
+        if (customerId == null) return base;
+        return base.stream()
+            .filter(c -> {
+                int previous = couponUseRepo.countByCouponIdAndCustomerId(c.getId(), customerId);
+                return switch (c.getUsageType()) {
+                    case SINGLE_USE_GLOBAL -> true; // ya viene filtrado por findActiveAt
+                    case SINGLE_USE_PER_CUSTOMER -> previous < 1;
+                    case MULTI_USE_PER_CUSTOMER -> {
+                        int max = c.getMaxUsesPerCustomer() == null ? Integer.MAX_VALUE : c.getMaxUsesPerCustomer();
+                        yield previous < max;
+                    }
+                };
+            })
+            .toList();
+    }
+
     @Transactional
     public Coupon create(Coupon c) {
         if (c.getCode() == null || c.getCode().isBlank())
