@@ -180,7 +180,8 @@ public class MarketingDtos {
         CustomerDto customer,
         CardDto card,
         List<RewardDto> availableRewards,
-        List<TransactionDto> recentTransactions
+        List<TransactionDto> recentTransactions,
+        List<RedemptionDto> myRedemptions
     ) {}
 
     // ── TRANSACTION ──────────────────────────────────────────────────────
@@ -237,6 +238,7 @@ public class MarketingDtos {
         Long customerId,
         Long rewardId,
         String rewardName,
+        String rewardImageUrl,
         String redemptionCode,
         Integer stampsCost,
         Integer pointsCost,
@@ -246,7 +248,19 @@ public class MarketingDtos {
         Instant expiresAt,
         Instant redeemedAt,
         String redeemedBranch
-    ) {}
+    ) {
+        public static RedemptionDto fromEntity(LoyaltyRedemption r, LoyaltyReward reward) {
+            return new RedemptionDto(
+                r.getId(), r.getCustomerId(), r.getRewardId(),
+                reward != null ? reward.getName() : null,
+                reward != null ? reward.getImageUrl() : null,
+                r.getRedemptionCode(), r.getStampsCost(), r.getPointsCost(),
+                r.getCashbackCost() == null ? BigDecimal.ZERO : r.getCashbackCost(),
+                r.getStatus(), r.getRequestedAt(), r.getExpiresAt(),
+                r.getRedeemedAt(), r.getRedeemedBranch()
+            );
+        }
+    }
 
     public record RedeemRequest(Long rewardId) {}
 

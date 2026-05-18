@@ -3,6 +3,7 @@ package app.coincidir.api.marketing.controller;
 import app.coincidir.api.domain.BotConfig;
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
 import app.coincidir.api.marketing.domain.LoyaltyProgram;
+import app.coincidir.api.marketing.dto.MarketingDtos;
 import app.coincidir.api.marketing.dto.MarketingDtos.CardDto;
 import app.coincidir.api.marketing.dto.MarketingDtos.CouponDto;
 import app.coincidir.api.marketing.dto.MarketingDtos.CustomerDto;
@@ -14,6 +15,7 @@ import app.coincidir.api.marketing.service.CouponService;
 import app.coincidir.api.marketing.service.LoyaltyCardService;
 import app.coincidir.api.marketing.service.LoyaltyCustomerService;
 import app.coincidir.api.marketing.service.LoyaltyProgramService;
+import app.coincidir.api.marketing.service.LoyaltyRedemptionService;
 import app.coincidir.api.marketing.service.LoyaltyRewardService;
 import app.coincidir.api.marketing.service.LoyaltyTransactionService;
 import app.coincidir.api.marketing.service.WebPushService;
@@ -58,6 +60,7 @@ public class PublicLoyaltyCardController {
     private final LoyaltyProgramService programService;
     private final LoyaltyRewardService rewardService;
     private final LoyaltyTransactionService transactionService;
+    private final LoyaltyRedemptionService redemptionService;
     private final CouponService couponService;
     private final WebPushService webPushService;
     private final BotConfigRepository botConfigRepository;
@@ -81,15 +84,50 @@ public class PublicLoyaltyCardController {
         return customerService.findByHash(customerHash).map(cust -> {
             var program = programService.getActiveProgram();
             var card = cardService.getOrCreate(cust);
-            var rewards = rewardService.listAvailableNow(program.getId());
+            var allRewards = rewardService.listAvailableNow(program.getId());
             var recent = transactionService.recent(cust.getId());
+
+            // Canjes del cliente (ordenados por más reciente).
+            var allRedemptions = redemptionService.listForCustomer(cust.getId());
+
+            // IDs de premios con canje "activo" — PENDING (esperando al mozo)
+            // o REDEEMED (ya usado). Se ocultan de la lista de disponibles para
+            // que el cliente no pueda volver a pedir el mismo premio. Aparecerán
+            // en la sección "Mis canjes".
+            var activeRewardIds = allRedemptions.stream()
+                .filter(r -> r.getStatus() == app.coincidir.api.marketing.domain.LoyaltyRedemption.Status.PENDING
+                          || r.getStatus() == app.coincidir.api.marketing.domain.LoyaltyRedemption.Status.REDEEMED)
+                .map(app.coincidir.api.marketing.domain.LoyaltyRedemption::getRewardId)
+                .collect(java.util.stream.Collectors.toSet());
+
+            var availableRewards = allRewards.stream()
+                .filter(r -> !activeRewardIds.contains(r.getId()))
+                .map(RewardDto::fromEntity)
+                .toList();
+
+            // Pre-cargo los rewards en un map para evitar N+1 al armar el DTO.
+            var rewardsById = allRewards.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                    app.coincidir.api.marketing.domain.LoyaltyReward::getId, r -> r));
+            // Pueden quedar redemptions cuyo reward fue dado de baja: lo buscamos
+            // individualmente como fallback.
+            var myRedemptions = allRedemptions.stream()
+                .map(r -> {
+                    var reward = rewardsById.get(r.getRewardId());
+                    if (reward == null) {
+                        reward = rewardService.findById(r.getRewardId()).orElse(null);
+                    }
+                    return MarketingDtos.RedemptionDto.fromEntity(r, reward);
+                })
+                .toList();
 
             return ResponseEntity.ok((Object) new PublicCardView(
                 ProgramDto.fromEntity(program),
                 CustomerDto.fromEntity(cust),
                 CardDto.fromEntity(card),
-                rewards.stream().map(RewardDto::fromEntity).toList(),
-                recent.stream().map(TransactionDto::fromEntity).toList()
+                availableRewards,
+                recent.stream().map(TransactionDto::fromEntity).toList(),
+                myRedemptions
             ));
         }).orElse(ResponseEntity.notFound().build());
     }

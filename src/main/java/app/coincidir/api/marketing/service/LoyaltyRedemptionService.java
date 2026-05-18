@@ -65,14 +65,26 @@ public class LoyaltyRedemptionService {
             return RequestResult.rejected(elig.reason());
         }
 
-        // Crear la redemption en PENDING
+        // Crear la redemption en PENDING.
+        // Para rewardType FREE forzamos costos a 0/ZERO aunque el admin haya cargado
+        // valores en costStamps/costPoints/costCashback. Un premio "gratis" no descuenta nada.
+        // Para los demás tipos, solo se cobra el campo correspondiente al tipo: si el premio es
+        // de STAMPS y por error está cargado costPoints, se ignora.
+        boolean isFree = reward.getRewardType() == LoyaltyReward.RewardType.FREE;
+        int stampsCost = (!isFree && reward.getRewardType() == LoyaltyReward.RewardType.STAMPS
+            && reward.getCostStamps() != null) ? reward.getCostStamps() : 0;
+        int pointsCost = (!isFree && reward.getRewardType() == LoyaltyReward.RewardType.POINTS
+            && reward.getCostPoints() != null) ? reward.getCostPoints() : 0;
+        BigDecimal cashbackCost = (!isFree && reward.getRewardType() == LoyaltyReward.RewardType.CASHBACK
+            && reward.getCostCashback() != null) ? reward.getCostCashback() : BigDecimal.ZERO;
+
         LoyaltyRedemption red = new LoyaltyRedemption();
         red.setCustomerId(customer.getId());
         red.setRewardId(reward.getId());
         red.setRedemptionCode(generateUniqueCode());
-        red.setStampsCost(reward.getCostStamps() == null ? 0 : reward.getCostStamps());
-        red.setPointsCost(reward.getCostPoints() == null ? 0 : reward.getCostPoints());
-        red.setCashbackCost(reward.getCostCashback() == null ? BigDecimal.ZERO : reward.getCostCashback());
+        red.setStampsCost(stampsCost);
+        red.setPointsCost(pointsCost);
+        red.setCashbackCost(cashbackCost);
         red.setStatus(LoyaltyRedemption.Status.PENDING);
         red.setExpiresAt(Instant.now().plus(REDEMPTION_TTL_HOURS, ChronoUnit.HOURS));
         red = redemptionRepo.save(red);

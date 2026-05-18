@@ -13,7 +13,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
 import java.net.URI;
 import java.util.Map;
 
@@ -107,14 +106,7 @@ public class PublicLoyaltyEnrollController {
                 "accepted", false));
         }
         var r = result.redemption();
-        // Obtenemos nombre del reward (lookup ligero)
-        String rewardName = rewardService.findById(r.getRewardId()).map(rr -> rr.getName()).orElse(null);
-        return ResponseEntity.ok(new RedemptionDto(
-            r.getId(), r.getCustomerId(), r.getRewardId(), rewardName,
-            r.getRedemptionCode(), r.getStampsCost(), r.getPointsCost(),
-            r.getCashbackCost() == null ? BigDecimal.ZERO : r.getCashbackCost(),
-            r.getStatus(), r.getRequestedAt(), r.getExpiresAt(),
-            r.getRedeemedAt(), r.getRedeemedBranch()
-        ));
+        var reward = rewardService.findById(r.getRewardId()).orElse(null);
+        return ResponseEntity.ok(RedemptionDto.fromEntity(r, reward));
     }
 }
