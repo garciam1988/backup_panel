@@ -147,7 +147,14 @@ public class BotTableService {
                 String name = col.get("name").asText();
                 String type = col.get("type").asText();
                 boolean required = col.path("required").asBoolean(false);
+                boolean auto = col.path("auto").asBoolean(false);
                 JsonNode val = data != null ? data.get(name) : null;
+
+                // Columnas auto-generadas: ignoramos cualquier valor que mande el LLM
+                // (puede haberse inventado uno) y NO validamos required acá, porque
+                // el sistema rellena este campo post-insert vía applyAutoColumns().
+                // Si el LLM no mandó nada, perfecto. Si mandó algo, lo descartamos.
+                if (auto) continue;
 
                 // Required check
                 if (val == null || val.isNull() || (val.isTextual() && val.asText().isBlank())) {
@@ -219,6 +226,74 @@ public class BotTableService {
         }
     }
 
+    /**
+     * Rellena las columnas marcadas como `auto: true` en el schema. Se invoca
+     * POST-insert (cuando el record ya tiene id generado) y POST-update si
+     * algún campo dependiente cambió.
+     *
+     * Soporta un campo opcional `autoTemplate` en cada columna con tokens:
+     *   {id}            → id del record (post-insert)
+     *   {date}          → fecha de creación como yyyy-MM-dd
+     *   {time}          → hora de creación como HH:mm
+     *   {field:nombre}  → valor de OTRA columna del record (útil para fecha_display
+     *                     formateando una columna `fecha_y_hora_reserva`)
+     *
+     * Si una columna `auto` no tiene `autoTemplate`, se usa el `id` plano como
+     * default razonable — eso cubre el caso típico de `numero_de_reserva`.
+     *
+     * Devuelve el JSON actualizado del record (con las columnas auto rellenas).
+     * Si no hay columnas auto, devuelve el dataJson tal cual sin tocar nada.
+     */
+    public String applyAutoColumns(BotTable table, BotTableRecord record) {
+        try {
+            JsonNode schema = objectMapper.readTree(table.getColumnsJson());
+            ObjectNode data = (ObjectNode) objectMapper.readTree(record.getDataJson());
+            boolean changed = false;
+
+            for (JsonNode col : schema) {
+                if (!col.path("auto").asBoolean(false)) continue;
+                String name = col.get("name").asText();
+                String tpl = col.path("autoTemplate").asText("{id}");
+                String value = renderAutoTemplate(tpl, record, data);
+                // Solo seteamos si difiere de lo que ya hay — evita updates innecesarios.
+                JsonNode existing = data.get(name);
+                if (existing == null || !value.equals(existing.asText())) {
+                    data.put(name, value);
+                    changed = true;
+                }
+            }
+            return changed ? objectMapper.writeValueAsString(data) : record.getDataJson();
+        } catch (Exception e) {
+            log.warn("[BotTable] applyAutoColumns falló para record {}: {}", record.getId(), e.getMessage());
+            return record.getDataJson();
+        }
+    }
+
+    private String renderAutoTemplate(String tpl, BotTableRecord record, JsonNode data) {
+        if (tpl == null || tpl.isBlank()) return String.valueOf(record.getId());
+        String result = tpl;
+        // Tokens simples
+        result = result.replace("{id}", String.valueOf(record.getId()));
+        // Fecha/hora de creación (en UTC; si en el futuro necesitamos timezone local
+        // del cliente, se podría tomar del program o del request).
+        Instant createdAt = record.getCreatedAt() != null ? record.getCreatedAt() : Instant.now();
+        java.time.ZonedDateTime z = createdAt.atZone(java.time.ZoneId.of("America/Argentina/Buenos_Aires"));
+        result = result.replace("{date}", z.toLocalDate().toString());
+        result = result.replace("{time}", String.format("%02d:%02d", z.getHour(), z.getMinute()));
+        // {field:nombreDeColumna} — interpolación de OTRA columna del record.
+        Pattern fieldRef = Pattern.compile("\\{field:([^}]+)\\}");
+        java.util.regex.Matcher m = fieldRef.matcher(result);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String fieldName = m.group(1);
+            JsonNode v = data.get(fieldName);
+            String replacement = v == null || v.isNull() ? "" : v.asText();
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
     // ─────────────────────────────────────────────────────────────
     // Tool generation para Claude
     // ─────────────────────────────────────────────────────────────
@@ -238,7 +313,13 @@ public class BotTableService {
         List<BotTable> active = tableRepo.findByActiveTrueOrderByNameAsc();
         if (active.isEmpty()) return List.of();
 
-        // Construir descripción de tablas para que Claude sepa qué slugs existen
+        // Construir descripción de tablas para que Claude sepa qué slugs existen.
+        //
+        // Las columnas con `auto: true` SE OMITEN del schema que ve el LLM. Son
+        // campos que el sistema rellena automáticamente (ej: numero_de_reserva
+        // generado del id, fecha_display formateada). Si las dejáramos visibles,
+        // el LLM podría inventar valores con patrones plausibles (ej: timestamps
+        // YYYYMMDDHHMM) que pisan al valor real que va a setear el sistema.
         StringBuilder tablesDesc = new StringBuilder("Tablas disponibles:\n");
         for (BotTable t : active) {
             tablesDesc.append("- ").append(t.getSlug()).append(": ");
@@ -249,6 +330,8 @@ public class BotTableService {
                 tablesDesc.append("[columnas: ");
                 List<String> colList = new ArrayList<>();
                 for (JsonNode c : cols) {
+                    // Columnas auto-generadas: el sistema las llena, el LLM no las toca.
+                    if (c.path("auto").asBoolean(false)) continue;
                     String type = c.get("type").asText();
                     String req = c.path("required").asBoolean(false) ? "*" : "";
                     colList.add(c.get("name").asText() + ":" + type + req);
@@ -256,6 +339,11 @@ public class BotTableService {
                 tablesDesc.append(String.join(", ", colList)).append("]\n");
             } catch (Exception e) { tablesDesc.append("[error parseando columnas]\n"); }
         }
+        tablesDesc.append("\nIMPORTANTE: solo guardá información que el usuario te dio explícitamente. ")
+                  .append("Si una columna obligatoria no tiene dato del usuario, PREGUNTÁ antes de invocar ")
+                  .append("add_record. NO inventes códigos, identificadores, ni valores plausibles para campos ")
+                  .append("que el usuario no mencionó. El sistema rellena automáticamente los campos que ")
+                  .append("necesita (ids, números de reserva, etc).\n");
         String tablesDescStr = tablesDesc.toString();
 
         List<ToolDef> tools = new ArrayList<>();
@@ -448,6 +536,17 @@ public class BotTableService {
         }
         rec = recordRepo.save(rec);
 
+        // Aplicar columnas auto-generadas ahora que el record tiene id real.
+        // Si hay alguna columna `auto: true`, calculamos su valor (usando id,
+        // fecha de creación, o referencias a otros campos del record) y guardamos
+        // de nuevo. Lo hacemos como un segundo save para que el id esté disponible
+        // — algunas plantillas (ej: numero_de_reserva = {id}) lo necesitan.
+        String withAuto = applyAutoColumns(t, rec);
+        if (!withAuto.equals(rec.getDataJson())) {
+            rec.setDataJson(withAuto);
+            rec = recordRepo.save(rec);
+        }
+
         // Disparamos evento "created" — los listeners (ej: BotTableEmailService)
         // se enteran y mandan email si la tabla tiene template configurado.
         try {
@@ -493,6 +592,14 @@ public class BotTableService {
         }
         String normalized = validateAndNormalizeRecord(t, merged);
         rec.setDataJson(normalized);
+        // Re-aplicar columnas auto: si por ejemplo `fecha_display` depende de
+        // `fecha_y_hora_reserva` y esa cambió, el display debe actualizarse.
+        // applyAutoColumns es idempotente y barato (no hace I/O), así que lo
+        // corremos siempre en update.
+        String withAuto = applyAutoColumns(t, rec);
+        if (!withAuto.equals(rec.getDataJson())) {
+            rec.setDataJson(withAuto);
+        }
         recordRepo.save(rec);
 
         try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); }
