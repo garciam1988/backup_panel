@@ -56,10 +56,20 @@ coincidir:
   # ─── API keys (SIN DEFAULT — son secretos) ──────────────────────────────
   # Si falta alguna, el backend arranca igual pero los endpoints que la
   # usan responden con error claro. No queremos hardcodear las keys nunca.
-  anthropic-key:    ${ANTHROPIC_API_KEY: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}
+  # La key vieja "sk-ant-api03-F0Dbv..." fue REVOCADA el 2026-05-19 por
+  # exposición en el bundle JS público del frontend (VITE_ANTHROPIC_API_KEY).
+  anthropic-key:    ${ANTHROPIC_API_KEY:}
   aerodatabox-key:  ${AERODATABOX_KEY:}
   pexels-key:       ${PEXELS_API_KEY:}
   elevenlabs-key:   ${ELEVENLABS_API_KEY:}
+  openai-key:       ${OPENAI_API_KEY:}
+
+  # ─── Whitelist de orígenes permitidos para /api/coinbot/ai/** ──────────
+  # CSV de hosts (sin protocolo ni path). Ejemplo:
+  #   asistente.yes-traveluy.com,bot.coincidir.app,localhost:5173
+  # Si está vacío, el filtro queda permisivo (no recomendado en producción).
+  # Configurar en Railway como COINBOT_ALLOWED_ORIGINS.
+  allowed-origins:  ${COINBOT_ALLOWED_ORIGINS:}
 
   # ─── Twilio para WhatsApp Business (módulo Marketing) ──────────────────
   # Si las 3 vars están seteadas, el NotificationDispatcherJob manda
