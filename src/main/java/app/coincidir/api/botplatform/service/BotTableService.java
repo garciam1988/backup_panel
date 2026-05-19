@@ -13,6 +13,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -422,12 +423,27 @@ public class BotTableService {
     }
 
     /** Ejecuta una tool. Si requiere confirmación, devuelve requiresConfirmation=true sin ejecutar. */
+    @Transactional
     public ToolResult executeTool(String toolName, JsonNode args, boolean confirmed) {
         return executeTool(toolName, args, confirmed, null);
     }
 
     /** Versión con sessionId — usada por el endpoint público para asociar el
-     *  record creado a la sesión del chat (necesario para reglas proactivas). */
+     *  record creado a la sesión del chat (necesario para reglas proactivas).
+     *
+     *  IMPORTANTE: @Transactional acá es CRÍTICO. Los listeners marcados como
+     *  @TransactionalEventListener(AFTER_COMMIT) (ej: BotRecordToLoyaltyListener
+     *  que sincroniza loyalty_customer desde reservas del bot, y
+     *  BotTableEmailService que manda emails de confirmación) NO se ejecutan
+     *  si el evento "created"/"updated"/"cancelled" se publica fuera de una
+     *  transacción activa: Spring lo descarta silenciosamente con un log
+     *  "No transaction is in progress" a nivel WARN.
+     *
+     *  Antes este service no era @Transactional y los enrolamientos loyalty
+     *  desde reservas del bot se perdían — los paths del panel (PanelBot
+     *  TableController, BotTableAdminController) sí funcionaban porque sus
+     *  controllers SÍ son @Transactional. */
+    @Transactional
     public ToolResult executeTool(String toolName, JsonNode args, boolean confirmed, String sessionId) {
         ToolResult r = new ToolResult();
         try {
