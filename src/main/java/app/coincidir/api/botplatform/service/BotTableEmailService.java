@@ -217,8 +217,16 @@ public class BotTableEmailService {
         }
 
         // 6) Render del template
-        String subject = renderTemplate(tpl.getSubject(), data, table);
-        String body = renderTemplate(tpl.getBodyHtml(), data, table);
+        //
+        // Enriquecemos el JSON de data con metadatos del record antes de pasarlo
+        // al renderer. Esto da soporte a placeholders meta como {{_id}} (id del
+        // record, usado típicamente como "número de reserva" en los emails) sin
+        // tener que cambiar la firma de resolvePlaceholder. El data_json original
+        // del record NO contiene `_id` porque solo guarda los campos definidos
+        // en columns_json; el id vive en la columna `id` del BotTableRecord.
+        JsonNode enrichedData = enrichDataWithRecordMeta(data, record);
+        String subject = renderTemplate(tpl.getSubject(), enrichedData, table);
+        String body = renderTemplate(tpl.getBodyHtml(), enrichedData, table);
 
         // 7) Construir y enviar.
         //
@@ -265,9 +273,46 @@ public class BotTableEmailService {
         }
     }
 
+    /**
+     * Devuelve una copia del JSON `data` enriquecida con metadatos del record
+     * que NO viven dentro de data_json: id, createdAt, updatedAt. Estos meta
+     * se exponen al template como placeholders con prefijo `_` (ej: `{{_id}}`).
+     *
+     * Por qué importa: los emails típicamente quieren mostrar un "número de
+     * reserva". Antes lo guardábamos como columna manual `numero_de_reserva`
+     * que el LLM rellenaba con un timestamp, pero ahora esa columna es auto
+     * y el id real del record es la fuente de verdad. Sin este helper, los
+     * placeholders meta caen al fallback de string vacío y el email muestra
+     * "N° de reserva: #" (sin número).
+     *
+     * Solo modificamos un clon — el `data` original sigue intacto por si
+     * algún caller lo usa más adelante. El clon usa fields prefijados con `_`
+     * que no chocan con nombres de columnas reales (los nombres de columnas
+     * son configurables pero por convención usamos snake_case sin guion bajo
+     * inicial).
+     */
+    private JsonNode enrichDataWithRecordMeta(JsonNode data, BotTableRecord record) {
+        if (record == null) return data;
+        ObjectNode enriched;
+        if (data != null && data.isObject()) {
+            enriched = data.deepCopy();
+        } else {
+            enriched = objectMapper.createObjectNode();
+        }
+        if (record.getId() != null) {
+            enriched.put("_id", record.getId());
+        }
+        if (record.getCreatedAt() != null) {
+            enriched.put("_createdAt", record.getCreatedAt().toString());
+        }
+        if (record.getUpdatedAt() != null) {
+            enriched.put("_updatedAt", record.getUpdatedAt().toString());
+        }
+        return enriched;
+    }
+
     /** Renderiza placeholders {{campo}} con datos del registro. */
-    String renderTemplate(String template, JsonNode data, BotTable table) {
-        if (template == null) return "";
+    String renderTemplate(String template, JsonNode data, BotTable table) {        if (template == null) return "";
         Matcher m = PLACEHOLDER.matcher(template);
         StringBuilder out = new StringBuilder();
         while (m.find()) {
@@ -564,8 +609,9 @@ public class BotTableEmailService {
             return res;
         }
 
-        String subject = renderTemplate(tpl.getSubject(), data, table);
-        String body = renderTemplate(tpl.getBodyHtml(), data, table);
+        JsonNode enrichedData = enrichDataWithRecordMeta(data, record);
+        String subject = renderTemplate(tpl.getSubject(), enrichedData, table);
+        String body = renderTemplate(tpl.getBodyHtml(), enrichedData, table);
 
         try {
             // Mismo tratamiento de data URLs → CID que en el envío real, vía

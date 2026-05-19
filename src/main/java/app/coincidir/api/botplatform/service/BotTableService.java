@@ -444,13 +444,34 @@ public class BotTableService {
                     return r;
             }
         } catch (SchemaError e) {
+            // Antes devolvíamos un string "Error: ..." que el LLM a veces
+            // interpretaba como "warning ignorable" y declaraba éxito de la
+            // operación al usuario. Ahora devolvemos un JSON estructurado con
+            // un hint explícito de comportamiento para que NO mienta al user.
+            log.warn("[BotTable] SchemaError ejecutando {}: {}", toolName, e.getMessage());
             r.ok = false;
-            r.output = "Error: " + e.getMessage();
+            try {
+                ObjectNode err = objectMapper.createObjectNode();
+                err.put("error", "schema_error");
+                err.put("message", e.getMessage());
+                err.put("hint", "La operación FALLÓ. NO le digas al usuario que se guardó. Pedile el dato faltante o corregí el valor inválido y reintentá.");
+                r.output = err.toString();
+            } catch (Exception ignored) {
+                r.output = "Error: " + e.getMessage();
+            }
             return r;
         } catch (Exception e) {
             log.warn("[BotTable] error ejecutando " + toolName, e);
             r.ok = false;
-            r.output = "Error ejecutando " + toolName + ": " + e.getMessage();
+            try {
+                ObjectNode err = objectMapper.createObjectNode();
+                err.put("error", "execution_error");
+                err.put("message", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                err.put("hint", "Ocurrió un error inesperado al ejecutar " + toolName + ". NO le digas al usuario que se guardó. Pedí disculpas y sugerí reintentar o contactar al equipo.");
+                r.output = err.toString();
+            } catch (Exception ignored) {
+                r.output = "Error ejecutando " + toolName + ": " + e.getMessage();
+            }
             return r;
         }
     }
@@ -518,6 +539,15 @@ public class BotTableService {
         BotTable t = mustFindTable(slug);
         JsonNode data = args.path("data");
 
+        // Logging defensivo: si el bot está fallando silenciosamente, este log
+        // es el oro para diagnosticar. Loguea SIEMPRE el input antes de validar.
+        if (log.isInfoEnabled()) {
+            String dataStr = data == null ? "null" : data.toString();
+            // Truncar para no spamear el log con payloads gigantes
+            if (dataStr.length() > 1000) dataStr = dataStr.substring(0, 1000) + "...(truncated)";
+            log.info("[BotTable] doAdd entrada: tabla={} session={} data={}", slug, sessionId, dataStr);
+        }
+
         if (Boolean.TRUE.equals(t.getConfirmAdd()) && !confirmed) {
             r.requiresConfirmation = true;
             r.confirmAction = "add";
@@ -526,7 +556,25 @@ public class BotTableService {
             return r;
         }
 
-        String normalized = validateAndNormalizeRecord(t, data);
+        String normalized;
+        try {
+            normalized = validateAndNormalizeRecord(t, data);
+        } catch (SchemaError se) {
+            // Si el validador rechaza, devolvemos un ToolResult de error CLARO.
+            // Antes esto se propagaba como excepción y el wrapper del controller
+            // hacía 500. Mejor: que el LLM reciba un JSON estructurado con el
+            // error para que pueda preguntarle al usuario el dato que falta.
+            log.warn("[BotTable] doAdd RECHAZADO por validador: tabla={} error={} data={}",
+                    slug, se.getMessage(), data);
+            r.ok = false;
+            ObjectNode err = objectMapper.createObjectNode();
+            err.put("error", "schema_error");
+            err.put("message", se.getMessage());
+            err.put("hint", "Faltan datos o son inválidos. Preguntale al usuario antes de reintentar. NO digas que ya guardaste la reserva — fallo.");
+            r.output = err.toString();
+            return r;
+        }
+
         BotTableRecord rec = new BotTableRecord();
         rec.setTableId(t.getId());
         rec.setDataJson(normalized);
@@ -535,6 +583,7 @@ public class BotTableService {
             rec.setSessionId(sessionId);
         }
         rec = recordRepo.save(rec);
+        log.info("[BotTable] doAdd INSERT ok: tabla={} record_id={}", slug, rec.getId());
 
         // Aplicar columnas auto-generadas ahora que el record tiene id real.
         // Si hay alguna columna `auto: true`, calculamos su valor (usando id,
@@ -545,6 +594,7 @@ public class BotTableService {
         if (!withAuto.equals(rec.getDataJson())) {
             rec.setDataJson(withAuto);
             rec = recordRepo.save(rec);
+            log.info("[BotTable] doAdd auto-columns aplicadas: tabla={} record_id={}", slug, rec.getId());
         }
 
         // Disparamos evento "created" — los listeners (ej: BotTableEmailService)
