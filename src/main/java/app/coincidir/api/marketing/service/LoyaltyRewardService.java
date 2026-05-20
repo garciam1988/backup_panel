@@ -4,9 +4,12 @@ import app.coincidir.api.marketing.domain.LoyaltyCard;
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
 import app.coincidir.api.marketing.domain.LoyaltyRedemption;
 import app.coincidir.api.marketing.domain.LoyaltyReward;
+import app.coincidir.api.marketing.domain.MarketingSegment;
 import app.coincidir.api.marketing.repository.LoyaltyCardRepository;
 import app.coincidir.api.marketing.repository.LoyaltyRedemptionRepository;
 import app.coincidir.api.marketing.repository.LoyaltyRewardRepository;
+import app.coincidir.api.marketing.repository.MarketingSegmentRepository;
+import app.coincidir.api.marketing.util.SegmentEvaluator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -49,6 +52,7 @@ public class LoyaltyRewardService {
     private final LoyaltyRedemptionRepository redemptionRepo;
     private final LoyaltyCardRepository cardRepo;
     private final LoyaltyProgramService programService;
+    private final MarketingSegmentRepository segmentRepo;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public List<LoyaltyReward> listForAdmin(Long programId) {
@@ -57,6 +61,37 @@ public class LoyaltyRewardService {
 
     public List<LoyaltyReward> listAvailableNow(Long programId) {
         return rewardRepo.findCurrentlyAvailable(programId, Instant.now());
+    }
+
+    /**
+     * Filtra una lista de premios dejando solo los que aplican al cliente
+     * según su segmento (si tienen segmentId). Premios sin segmentId pasan
+     * tal cual. Segmentos huérfanos / borrados también pasan (no bloquean).
+     *
+     * Usado por la PWA pública para pre-filtrar el catálogo antes de
+     * mostrárselo al cliente. La validación dura sigue viviendo en
+     * checkEligibility (al momento de canjear).
+     */
+    public List<LoyaltyReward> filterBySegment(List<LoyaltyReward> rewards, LoyaltyCustomer customer) {
+        if (rewards == null || rewards.isEmpty()) return rewards;
+        if (customer == null) return rewards;
+
+        // Pre-cargo la card una sola vez.
+        LoyaltyCard card = cardRepo.findByCustomerId(customer.getId()).orElse(null);
+        java.util.Map<Long, Boolean> cache = new java.util.HashMap<>();
+        SegmentEvaluator evaluator = new SegmentEvaluator(objectMapper);
+
+        return rewards.stream()
+            .filter(r -> {
+                if (r.getSegmentId() == null) return true;
+                Boolean matches = cache.computeIfAbsent(r.getSegmentId(), sid -> {
+                    MarketingSegment seg = segmentRepo.findById(sid).orElse(null);
+                    if (seg == null || seg.getDeletedAt() != null) return true; // huérfano
+                    return evaluator.matches(seg.getCriteriaJson(), customer, card);
+                });
+                return Boolean.TRUE.equals(matches);
+            })
+            .toList();
     }
 
     public Optional<LoyaltyReward> findById(Long id) {
@@ -69,6 +104,7 @@ public class LoyaltyRewardService {
             r.setProgramId(programService.getActiveProgram().getId());
         }
         validate(r);
+        if (r.getSegmentId() != null) validateSegmentExists(r.getSegmentId());
         if (r.getStockTotal() != null && r.getStockRemaining() == null) {
             r.setStockRemaining(r.getStockTotal());
         }
@@ -76,6 +112,12 @@ public class LoyaltyRewardService {
         if (r.getActive() == null)       r.setActive(true);
         if (r.getDisplayOrder() == null) r.setDisplayOrder(0);
         return rewardRepo.save(r);
+    }
+
+    private void validateSegmentExists(Long segmentId) {
+        MarketingSegment seg = segmentRepo.findById(segmentId).orElse(null);
+        if (seg == null || seg.getDeletedAt() != null)
+            throw new IllegalArgumentException("Segmento no encontrado o eliminado: " + segmentId);
     }
 
     @Transactional
@@ -95,6 +137,18 @@ public class LoyaltyRewardService {
         if (update.getStockTotal() != null)  r.setStockTotal(update.getStockTotal());
         if (update.getStockRemaining() != null) r.setStockRemaining(update.getStockRemaining());
         if (update.getMaxPerCustomer() != null)  r.setMaxPerCustomer(update.getMaxPerCustomer());
+        // segmentId: ver comentario equivalente en CouponService.update.
+        //   null    → no toca
+        //   -1L     → limpiar (vuelve a "todos los clientes")
+        //   otro    → validar y setear
+        if (update.getSegmentId() != null) {
+            if (update.getSegmentId() == -1L) {
+                r.setSegmentId(null);
+            } else {
+                validateSegmentExists(update.getSegmentId());
+                r.setSegmentId(update.getSegmentId());
+            }
+        }
         if (update.getValidDaysOfWeek() != null) r.setValidDaysOfWeek(update.getValidDaysOfWeek());
         if (update.getValidHoursJson() != null)  r.setValidHoursJson(update.getValidHoursJson());
         if (update.getBranchRestrictions() != null) r.setBranchRestrictions(update.getBranchRestrictions());
@@ -171,6 +225,20 @@ public class LoyaltyRewardService {
                 List.of(LoyaltyRedemption.Status.PENDING, LoyaltyRedemption.Status.REDEEMED));
             if (previous >= reward.getMaxPerCustomer()) {
                 return EligibilityResult.no("Ya canjeaste este premio el máximo de veces");
+            }
+        }
+
+        // Filtro por segmento: si el premio está restringido a un segmento y
+        // el cliente no matchea, bloquear. Segmento huérfano (borrado) →
+        // tratamos como "para todos" (no bloquea).
+        if (reward.getSegmentId() != null) {
+            MarketingSegment seg = segmentRepo.findById(reward.getSegmentId()).orElse(null);
+            if (seg != null && seg.getDeletedAt() == null) {
+                LoyaltyCard cardForSegment = cardRepo.findByCustomerId(customer.getId()).orElse(null);
+                SegmentEvaluator ev = new SegmentEvaluator(objectMapper);
+                if (!ev.matches(seg.getCriteriaJson(), customer, cardForSegment)) {
+                    return EligibilityResult.no("Este premio no aplica a vos");
+                }
             }
         }
 

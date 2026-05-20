@@ -87,6 +87,13 @@ public class PublicLoyaltyCardController {
             var allRewards = rewardService.listAvailableNow(program.getId());
             var recent = transactionService.recent(cust.getId());
 
+            // Pre-filtro por segmento: los premios con segmentId solo se le
+            // muestran al cliente si matchea. La validación dura para el
+            // canje vive en LoyaltyRewardService.checkEligibility, pero acá
+            // ya filtramos en la PWA para no mostrarle premios que después
+            // no va a poder canjear (mejor UX que "no aplica a vos" al tocar).
+            var filteredBySegment = rewardService.filterBySegment(allRewards, cust);
+
             // Canjes del cliente (ordenados por más reciente).
             var allRedemptions = redemptionService.listForCustomer(cust.getId());
 
@@ -100,7 +107,7 @@ public class PublicLoyaltyCardController {
                 .map(app.coincidir.api.marketing.domain.LoyaltyRedemption::getRewardId)
                 .collect(java.util.stream.Collectors.toSet());
 
-            var availableRewards = allRewards.stream()
+            var availableRewards = filteredBySegment.stream()
                 .filter(r -> !activeRewardIds.contains(r.getId()))
                 .map(RewardDto::fromEntity)
                 .toList();
@@ -109,6 +116,10 @@ public class PublicLoyaltyCardController {
             // Necesito tanto los rewards activos como los borrados (porque puede
             // haber transacciones históricas que referencien premios ya dados de
             // baja). Para esos hago lookup individual.
+            // Nota: uso allRewards (sin filtrar por segmento) para el lookup
+            // de transacciones históricas — si el cliente canjeó un premio que
+            // ahora está fuera de su segmento, igual queremos mostrar el nombre
+            // en su historial.
             var rewardsById = allRewards.stream()
                 .collect(java.util.stream.Collectors.toMap(
                     app.coincidir.api.marketing.domain.LoyaltyReward::getId, r -> r));

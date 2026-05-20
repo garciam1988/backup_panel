@@ -79,6 +79,7 @@ public class MarketingDtos {
         Integer stockTotal,
         Integer stockRemaining,
         Integer maxPerCustomer,
+        Long segmentId,
         String validDaysOfWeek,
         String validHoursJson,
         String branchRestrictions,
@@ -91,6 +92,7 @@ public class MarketingDtos {
                 r.getCostStamps(), r.getCostPoints(), r.getCostCashback(),
                 r.getValidFrom(), r.getValidUntil(),
                 r.getStockTotal(), r.getStockRemaining(), r.getMaxPerCustomer(),
+                r.getSegmentId(),
                 r.getValidDaysOfWeek(), r.getValidHoursJson(), r.getBranchRestrictions(),
                 r.getActive(), r.getDisplayOrder());
         }
@@ -412,7 +414,9 @@ public class MarketingDtos {
         Integer currentUses,
         Coupon.Source source,
         Long campaignId,
-        Boolean active
+        Long segmentId,
+        Boolean active,
+        Instant archivedAt
     ) {
         public static CouponDto fromEntity(Coupon c) {
             return new CouponDto(c.getId(), c.getCode(), c.getName(), c.getDescription(),
@@ -421,7 +425,8 @@ public class MarketingDtos {
                 c.getValidFrom(), c.getValidUntil(),
                 c.getValidDaysOfWeekJson(), c.getValidBranchesJson(),
                 c.getUsageType(), c.getMaxUsesTotal(), c.getMaxUsesPerCustomer(),
-                c.getCurrentUses(), c.getSource(), c.getCampaignId(), c.getActive());
+                c.getCurrentUses(), c.getSource(), c.getCampaignId(),
+                c.getSegmentId(), c.getActive(), c.getArchivedAt());
         }
     }
 

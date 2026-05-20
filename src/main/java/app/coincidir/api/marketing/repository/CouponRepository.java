@@ -17,9 +17,13 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
 
     Page<Coupon> findAllByOrderByCreatedAtDesc(Pageable pageable);
 
+    /** Lista cupones NO archivados (archived_at IS NULL), orden desc por created_at. */
+    Page<Coupon> findByArchivedAtIsNullOrderByCreatedAtDesc(Pageable pageable);
+
     @Query("""
         SELECT c FROM Coupon c
         WHERE c.active = true
+          AND c.archivedAt IS NULL
           AND (c.validFrom  IS NULL OR c.validFrom  <= :now)
           AND (c.validUntil IS NULL OR c.validUntil >= :now)
           AND (c.maxUsesTotal IS NULL OR c.currentUses < c.maxUsesTotal)

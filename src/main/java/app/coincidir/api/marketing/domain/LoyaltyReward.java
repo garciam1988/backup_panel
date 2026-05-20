@@ -81,6 +81,21 @@ public class LoyaltyReward {
     @Column(name = "max_per_customer")
     private Integer maxPerCustomer;
 
+    /**
+     * Si NO es null, el premio solo es elegible para clientes que matcheen
+     * el segmento indicado (evaluado por SegmentEvaluator). Si es null, el
+     * premio aplica a TODOS los clientes (comportamiento histórico).
+     *
+     * Útil para premios condicionales: "roll gratis para clientes con 10+
+     * stamps", "postre gratis para los que cumplen este mes", etc.
+     *
+     * No usamos FK en BD a propósito: si el admin borra el segmento, los
+     * premios que lo referencian quedan "huérfanos" y se tratan como
+     * segmentId null (visibles a todos). Mejor eso que romper el catálogo.
+     */
+    @Column(name = "segment_id")
+    private Long segmentId;
+
     /** JSON array: ["MON","WED","FRI"]. NULL = todos los días. */
     @Column(name = "valid_days_of_week", columnDefinition = "JSON")
     private String validDaysOfWeek;

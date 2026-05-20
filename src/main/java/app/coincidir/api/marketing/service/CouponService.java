@@ -2,8 +2,15 @@ package app.coincidir.api.marketing.service;
 
 import app.coincidir.api.marketing.domain.Coupon;
 import app.coincidir.api.marketing.domain.CouponUse;
+import app.coincidir.api.marketing.domain.LoyaltyCard;
+import app.coincidir.api.marketing.domain.LoyaltyCustomer;
+import app.coincidir.api.marketing.domain.MarketingSegment;
 import app.coincidir.api.marketing.repository.CouponRepository;
 import app.coincidir.api.marketing.repository.CouponUseRepository;
+import app.coincidir.api.marketing.repository.LoyaltyCardRepository;
+import app.coincidir.api.marketing.repository.LoyaltyCustomerRepository;
+import app.coincidir.api.marketing.repository.MarketingSegmentRepository;
+import app.coincidir.api.marketing.util.SegmentEvaluator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -47,12 +54,26 @@ public class CouponService {
 
     private final CouponRepository couponRepo;
     private final CouponUseRepository couponUseRepo;
+    private final LoyaltyCustomerRepository customerRepo;
+    private final LoyaltyCardRepository cardRepo;
+    private final MarketingSegmentRepository segmentRepo;
 
     @Autowired
     private ObjectMapper objectMapper;
 
     public Page<Coupon> list(Pageable pageable) {
-        return couponRepo.findAllByOrderByCreatedAtDesc(pageable);
+        return list(pageable, false);
+    }
+
+    /**
+     * Lista cupones con paginación. Si includeArchived es false (default),
+     * solo devuelve los no archivados (archived_at IS NULL).
+     */
+    public Page<Coupon> list(Pageable pageable, boolean includeArchived) {
+        if (includeArchived) {
+            return couponRepo.findAllByOrderByCreatedAtDesc(pageable);
+        }
+        return couponRepo.findByArchivedAtIsNullOrderByCreatedAtDesc(pageable);
     }
 
     public Optional<Coupon> findById(Long id)  { return couponRepo.findById(id); }
@@ -82,8 +103,36 @@ public class CouponService {
     public List<Coupon> listActiveNowForCustomer(Long customerId) {
         List<Coupon> base = listActiveNow();
         if (customerId == null) return base;
+
+        // Pre-resolvemos cliente + tarjeta una sola vez para evaluar segmentos.
+        // Si el cliente no existe (no debería) caemos al filtrado solo por
+        // usos previos.
+        LoyaltyCustomer customer = customerRepo.findById(customerId).orElse(null);
+        LoyaltyCard card = customer == null
+            ? null
+            : cardRepo.findByCustomerId(customer.getId()).orElse(null);
+
+        // Cache de segmentos ya evaluados para este cliente. Varios cupones
+        // pueden referenciar el mismo segmento → así no re-evaluamos N veces.
+        java.util.Map<Long, Boolean> segmentMatchCache = new java.util.HashMap<>();
+        SegmentEvaluator evaluator = new SegmentEvaluator(objectMapper);
+
         return base.stream()
             .filter(c -> {
+                // 1) Filtro por segmento del cupón. Si el cupón tiene segmentId
+                //    y el cliente NO matchea ese segmento, no lo mostramos.
+                //    Si el segmento referenciado no existe / está borrado, el
+                //    cupón se trata como "para todos" (huérfano benigno).
+                if (c.getSegmentId() != null && customer != null) {
+                    Boolean matches = segmentMatchCache.computeIfAbsent(c.getSegmentId(), sid -> {
+                        MarketingSegment seg = segmentRepo.findById(sid).orElse(null);
+                        if (seg == null || seg.getDeletedAt() != null) return true; // huérfano → visible
+                        return evaluator.matches(seg.getCriteriaJson(), customer, card);
+                    });
+                    if (!Boolean.TRUE.equals(matches)) return false;
+                }
+
+                // 2) Filtro por usos previos del cliente (lógica histórica).
                 int previous = couponUseRepo.countByCouponIdAndCustomerId(c.getId(), customerId);
                 return switch (c.getUsageType()) {
                     case SINGLE_USE_GLOBAL -> true; // ya viene filtrado por findActiveAt
@@ -130,6 +179,9 @@ public class CouponService {
         if (c.getDiscountType() == null)
             throw new IllegalArgumentException("discountType es requerido");
 
+        // Validar segmento si vino: tiene que existir y no estar borrado.
+        if (c.getSegmentId() != null) validateSegmentExists(c.getSegmentId());
+
         // Defaults defensivos: las columnas NOT NULL tienen defaults a nivel
         // de campo Java, pero si el cliente manda explícitamente null en el
         // JSON, Jackson los pisa con null y JPA explota al insertar. Acá
@@ -141,6 +193,12 @@ public class CouponService {
         if (c.getActive() == null)              c.setActive(true);
 
         return couponRepo.save(c);
+    }
+
+    private void validateSegmentExists(Long segmentId) {
+        MarketingSegment seg = segmentRepo.findById(segmentId).orElse(null);
+        if (seg == null || seg.getDeletedAt() != null)
+            throw new IllegalArgumentException("Segmento no encontrado o eliminado: " + segmentId);
     }
 
     @Transactional
@@ -161,9 +219,55 @@ public class CouponService {
         if (update.getUsageType() != null) c.setUsageType(update.getUsageType());
         if (update.getMaxUsesTotal() != null) c.setMaxUsesTotal(update.getMaxUsesTotal());
         if (update.getMaxUsesPerCustomer() != null) c.setMaxUsesPerCustomer(update.getMaxUsesPerCustomer());
+        // segmentId: tres casos posibles
+        //   - update.segmentId == null  → no toca (Jackson no diferencia "campo
+        //     ausente" de "campo null", asumimos no-touch para no romper updates
+        //     parciales que vienen sin este campo).
+        //   - update.segmentId == -1    → sentinel para limpiar a NULL desde el front
+        //     (volver a "aplica a todos").
+        //   - cualquier otro Long       → validar y setear.
+        if (update.getSegmentId() != null) {
+            if (update.getSegmentId() == -1L) {
+                c.setSegmentId(null);
+            } else {
+                validateSegmentExists(update.getSegmentId());
+                c.setSegmentId(update.getSegmentId());
+            }
+        }
         if (update.getActive() != null) c.setActive(update.getActive());
         return couponRepo.save(c);
     }
+
+    /**
+     * "Elimina" un cupón. Si nunca tuvo usos, hard delete. Si ya tiene
+     * coupon_use registrados, lo archivamos: archived_at=now, active=false.
+     * El cupón queda inaccesible para el cliente y desaparece del listado
+     * del panel admin (salvo includeArchived=true), pero el histórico de
+     * coupon_use sigue referenciándolo válidamente.
+     *
+     * Devuelve "deleted" o "archived" para que el front pueda mostrar el
+     * mensaje correcto.
+     */
+    @Transactional
+    public DeleteResult delete(Long id) {
+        Coupon c = couponRepo.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Cupón no encontrado"));
+        int uses = couponUseRepo.countByCouponId(c.getId());
+        if (uses > 0) {
+            // Archivar (idempotente: si ya estaba archivado, refrescamos timestamp).
+            c.setArchivedAt(Instant.now());
+            c.setActive(false);
+            couponRepo.save(c);
+            log.info("Cupón archivado id={} code={} (tenía {} usos)", c.getId(), c.getCode(), uses);
+            return new DeleteResult(false, true, uses);
+        }
+        couponRepo.delete(c);
+        log.info("Cupón eliminado id={} code={}", c.getId(), c.getCode());
+        return new DeleteResult(true, false, 0);
+    }
+
+    /** Resultado del delete: si fue hard delete, si quedó archivado, y cuántos usos tenía. */
+    public record DeleteResult(boolean deleted, boolean archived, int previousUses) {}
 
     /**
      * Valida y aplica el cupón. Si todas las restricciones pasan, registra
@@ -176,6 +280,7 @@ public class CouponService {
         Coupon c = opt.get();
 
         Instant now = Instant.now();
+        if (c.getArchivedAt() != null) return ApplyResult.rejected("Cupón archivado");
         if (Boolean.FALSE.equals(c.getActive())) return ApplyResult.rejected("Cupón inactivo");
         if (c.getValidFrom() != null && now.isBefore(c.getValidFrom()))
             return ApplyResult.rejected("Aún no comenzó la vigencia");
@@ -189,6 +294,23 @@ public class CouponService {
             return ApplyResult.rejected("Cupón no válido hoy");
         if (branchId != null && !matchesBranch(c.getValidBranchesJson(), branchId))
             return ApplyResult.rejected("Cupón no válido en esta sucursal");
+
+        // Filtro por segmento: si el cupón está restringido y el cliente no
+        // matchea, rechazamos. Segmento huérfano (borrado) → tratamos como
+        // "para todos" (no bloquea).
+        if (c.getSegmentId() != null) {
+            LoyaltyCustomer customer = customerRepo.findById(customerId).orElse(null);
+            if (customer != null) {
+                MarketingSegment seg = segmentRepo.findById(c.getSegmentId()).orElse(null);
+                if (seg != null && seg.getDeletedAt() == null) {
+                    LoyaltyCard card = cardRepo.findByCustomerId(customer.getId()).orElse(null);
+                    SegmentEvaluator ev = new SegmentEvaluator(objectMapper);
+                    if (!ev.matches(seg.getCriteriaJson(), customer, card)) {
+                        return ApplyResult.rejected("Este cupón no aplica a este cliente");
+                    }
+                }
+            }
+        }
 
         // Usos por cliente
         int previous = couponUseRepo.countByCouponIdAndCustomerId(c.getId(), customerId);

@@ -27,8 +27,9 @@ public class MarketingCouponController {
 
     @GetMapping
     public Map<String, Object> list(@RequestParam(value = "page", defaultValue = "0") int page,
-                                    @RequestParam(value = "size", defaultValue = "20") int size) {
-        Page<Coupon> p = couponService.list(PageRequest.of(page, size));
+                                    @RequestParam(value = "size", defaultValue = "20") int size,
+                                    @RequestParam(value = "includeArchived", defaultValue = "false") boolean includeArchived) {
+        Page<Coupon> p = couponService.list(PageRequest.of(page, size), includeArchived);
         return Map.of(
             "items", p.getContent().stream().map(CouponDto::fromEntity).toList(),
             "total", p.getTotalElements(),
@@ -66,6 +67,20 @@ public class MarketingCouponController {
         try {
             Coupon saved = couponService.update(id, body);
             return ResponseEntity.ok(CouponDto.fromEntity(saved));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> delete(@PathVariable Long id) {
+        try {
+            CouponService.DeleteResult result = couponService.delete(id);
+            return ResponseEntity.ok(Map.of(
+                "deleted", result.deleted(),
+                "archived", result.archived(),
+                "previousUses", result.previousUses()
+            ));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

@@ -97,8 +97,30 @@ public class Coupon {
     @Column(name = "campaign_id")
     private Long campaignId;
 
+    /**
+     * Si NO es null, el cupón solo se muestra a clientes que matcheen el
+     * segmento indicado (evaluado por SegmentEvaluator). Si es null, el
+     * cupón aplica a TODOS los clientes (comportamiento histórico).
+     *
+     * No usamos FK en BD a propósito: si el admin borra el segmento, los
+     * cupones que lo referencian quedan "huérfanos" y se tratan como si
+     * segmentId fuera null (visibles a todos). Es preferible eso a romper
+     * promociones en producción.
+     */
+    @Column(name = "segment_id")
+    private Long segmentId;
+
     @Column(name = "active", nullable = false)
     private Boolean active = true;
+
+    /**
+     * Si NO es null, el cupón está archivado: existe en BD para preservar el
+     * histórico de coupon_use, pero NO aparece en la lista del panel admin
+     * (salvo que se pida includeArchived=true) y se fuerza active=false al
+     * archivarlo. Es la alternativa al hard delete cuando ya tuvo usos.
+     */
+    @Column(name = "archived_at")
+    private Instant archivedAt;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
