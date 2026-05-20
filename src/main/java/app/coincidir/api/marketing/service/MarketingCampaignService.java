@@ -1,10 +1,12 @@
 package app.coincidir.api.marketing.service;
 
 import app.coincidir.api.marketing.domain.CampaignRecipient;
+import app.coincidir.api.marketing.domain.Coupon;
 import app.coincidir.api.marketing.domain.LoyaltyCustomer;
 import app.coincidir.api.marketing.domain.MarketingCampaign;
 import app.coincidir.api.marketing.domain.MarketingSegment;
 import app.coincidir.api.marketing.repository.CampaignRecipientRepository;
+import app.coincidir.api.marketing.repository.CouponRepository;
 import app.coincidir.api.marketing.repository.MarketingCampaignRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +55,7 @@ public class MarketingCampaignService {
 
     private final MarketingCampaignRepository campaignRepo;
     private final CampaignRecipientRepository recipientRepo;
+    private final CouponRepository couponRepo;
     private final MarketingSegmentService segmentService;
 
     @Autowired
@@ -184,6 +187,57 @@ public class MarketingCampaignService {
         c.setStatus(MarketingCampaign.Status.CANCELLED);
         campaignRepo.save(c);
     }
+
+    /**
+     * Elimina la campaña físicamente junto con sus campaign_recipient. Si hay
+     * cupones que la referencian (coupon.campaign_id), se les pone NULL en
+     * lugar de borrarlos: los cupones tienen vida propia y pueden seguir
+     * usándose aunque la campaña que los originó haya desaparecido.
+     *
+     * Reglas de estado:
+     *   - DRAFT, CANCELLED, COMPLETED, FAILED: se borra directamente.
+     *   - SCHEDULED: se borra (equivale a cancelar y borrar; el scheduler la
+     *     deja de encontrar al no haber fila).
+     *   - RUNNING: NO se permite. Hay que esperar a que termine (pase a
+     *     COMPLETED / FAILED) o cancelarla manualmente antes (no aplica:
+     *     cancel sólo desde DRAFT/SCHEDULED). Esto evita race conditions
+     *     con el scheduler que puede estar tocando recipients en simultáneo.
+     *
+     * Devuelve cuántos recipients y cuántos cupones desvinculados, para que
+     * el frontend pueda mostrar feedback ("Se eliminó la campaña y N envíos
+     * asociados").
+     */
+    @Transactional
+    public DeleteResult delete(Long id) {
+        MarketingCampaign c = campaignRepo.findById(id)
+            .orElseThrow(() -> new IllegalArgumentException("Campaña no encontrada"));
+
+        if (c.getStatus() == MarketingCampaign.Status.RUNNING) {
+            throw new IllegalStateException(
+                "No se puede eliminar una campaña en curso. Esperá a que termine.");
+        }
+
+        // 1) Desvincular cupones que la referencian (NO se borran los cupones).
+        List<Coupon> linkedCoupons = couponRepo.findByCampaignId(id);
+        for (Coupon cp : linkedCoupons) {
+            cp.setCampaignId(null);
+            couponRepo.save(cp);
+        }
+
+        // 2) Borrar recipients de esta campaña.
+        long deletedRecipients = recipientRepo.deleteByCampaignId(id);
+
+        // 3) Borrar la campaña en sí.
+        campaignRepo.delete(c);
+
+        log.info("Campaña {} eliminada (status previo={}, recipients borrados={}, cupones desvinculados={})",
+            id, c.getStatus(), deletedRecipients, linkedCoupons.size());
+
+        return new DeleteResult(true, deletedRecipients, linkedCoupons.size());
+    }
+
+    /** Resultado del delete. Se serializa al JSON que recibe el frontend. */
+    public record DeleteResult(boolean deleted, long recipientsDeleted, int couponsUnlinked) {}
 
     /** Resuelve la lista de clientes target: por segment_id o por target_filter_json ad-hoc. */
     private List<LoyaltyCustomer> resolveTargets(MarketingCampaign c) {

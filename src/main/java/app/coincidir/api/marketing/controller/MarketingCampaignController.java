@@ -19,6 +19,7 @@ import java.util.Map;
  *   POST   /                  Crear (queda en DRAFT)
  *   POST   /{id}/launch       Lanza (IMMEDIATE → RUNNING; SCHEDULED → espera)
  *   POST   /{id}/cancel       Cancela una DRAFT/SCHEDULED
+ *   DELETE /{id}              Borra la campaña + recipients (no permitido en RUNNING)
  *   GET    /{id}/recipients   Listado de destinatarios y estados
  */
 @RestController
@@ -82,6 +83,20 @@ public class MarketingCampaignController {
         try {
             campaignService.cancel(id);
             return ResponseEntity.noContent().build();
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Elimina la campaña. Permitido en cualquier estado excepto RUNNING.
+     * Devuelve un JSON con el conteo de recipients borrados y cupones
+     * desvinculados, o 400 con error si el estado no lo permite.
+     */
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> delete(@PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(campaignService.delete(id));
         } catch (IllegalArgumentException | IllegalStateException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

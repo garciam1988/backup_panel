@@ -29,4 +29,8 @@ public interface CouponRepository extends JpaRepository<Coupon, Long> {
           AND (c.maxUsesTotal IS NULL OR c.currentUses < c.maxUsesTotal)
     """)
     List<Coupon> findActiveAt(@Param("now") Instant now);
+
+    /** Cupones que referencian una campaña. Usado al eliminar la campaña para
+     *  desvincularlos (los cupones siguen existiendo, sin campaña asociada). */
+    List<Coupon> findByCampaignId(Long campaignId);
 }
