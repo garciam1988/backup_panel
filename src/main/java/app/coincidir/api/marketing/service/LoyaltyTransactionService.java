@@ -101,8 +101,17 @@ public class LoyaltyTransactionService {
             }
         }
 
+        // Sanity check: una transacción con deltas en cero generalmente es un
+        // bug del caller (forgot to pass amount, regla que no matchea, etc.).
+        // Excepciones: adjustment y refund legítimamente pueden ser 0, y
+        // redeem_reward también — porque los premios FREE (rewardType=FREE)
+        // generan canjes sin costo en stamps/points/cashback, pero igual
+        // queremos registrarlos en el log para mantener la auditoría y para
+        // que card.lastRedeemAt se actualice.
         if (stampsDelta == 0 && pointsDelta == 0 && cashbackDelta.compareTo(BigDecimal.ZERO) == 0
-            && !"adjustment".equals(in.transactionType()) && !"refund".equals(in.transactionType())) {
+            && !"adjustment".equals(in.transactionType())
+            && !"refund".equals(in.transactionType())
+            && !"redeem_reward".equals(in.transactionType())) {
             throw new IllegalArgumentException("La transacción no tiene deltas para aplicar");
         }
 
