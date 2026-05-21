@@ -48,7 +48,7 @@ public class AirFlightAlertController {
         service.marcarVisto(id);
         return ResponseEntity.ok(Map.of("ok", true));
     }
-    // borrar
+
     @PostMapping("/{id}/ignorar-permanentemente")
     public ResponseEntity<?> ignorarPermanentemente(@PathVariable Long id) {
         service.ignorarPermanentemente(id);

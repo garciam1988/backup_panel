@@ -14,6 +14,8 @@ import app.coincidir.api.botplatform.service.BotTableEmailService;
 import app.coincidir.api.botplatform.service.BotTableImportExportService;
 import app.coincidir.api.botplatform.service.BotTableService;
 import app.coincidir.api.botplatform.service.EmailReminderJob;
+import app.coincidir.api.domain.ConversationLog;
+import app.coincidir.api.repository.ConversationLogRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -70,6 +72,9 @@ public class BotTableAdminController {
     private final EmailReminderJob reminderJob;
     private final ApplicationEventPublisher eventPublisher;
     private final AuditService auditService;
+    // Para el endpoint admin del chat de una reserva (espejo del de panel).
+    // Buscamos el conversation_log por session_id que el record almacena.
+    private final ConversationLogRepository conversationLogRepo;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────── Tablas ───────
@@ -315,6 +320,69 @@ public class BotTableAdminController {
             } catch (Exception ignored) {}
         }
     }
+
+    /**
+     * Devuelve el chat asociado a una reserva (si fue creada por el bot).
+     * Espejo del endpoint de panel `/api/panel/bot-tables/{tableId}/records/{recordId}/conversation`,
+     * pero accesible desde admin (usa el JWT de /admin en lugar del de /reserve).
+     *
+     * Se usa desde Smart Tables → click en una reserva → tab "Chat" del modal.
+     *
+     * Devuelve 404 si:
+     *   - el record no existe
+     *   - el record no fue creado por el bot (no tiene session_id)
+     *   - el conversation_log todavía no se cerró (chat en curso)
+     */
+    @GetMapping("/records/{recordId}/conversation")
+    @Transactional(readOnly = true)
+    public ConversationDto getRecordConversation(@PathVariable Long recordId) {
+        BotTableRecord rec = recordRepo.findById(recordId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Record no encontrado"));
+
+        String sessionId = rec.getSessionId();
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "Esta reserva no fue creada por el bot — no hay conversación asociada.");
+        }
+
+        Optional<ConversationLog> optLog = conversationLogRepo.findFirstByVisitorIdOrderByIdDesc(sessionId);
+        if (optLog.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "La conversación todavía está en curso o aún no fue registrada.");
+        }
+
+        ConversationLog log = optLog.get();
+        ConversationDto dto = new ConversationDto();
+        dto.sessionId = sessionId;
+        dto.startedAt = log.getStartedAt();
+        dto.endedAt = log.getEndedAt();
+        dto.messageCount = log.getMessageCount();
+        dto.closedReason = log.getClosedReason();
+        dto.deviceType = log.getDeviceType();
+        dto.deviceOs = log.getDeviceOs();
+        dto.deviceBrowser = log.getDeviceBrowser();
+        dto.clientFirstName = log.getClientFirstName();
+        dto.clientLastName = log.getClientLastName();
+        dto.messagesJson = (log.getMessagesJson() == null || log.getMessagesJson().isBlank())
+                ? "[]" : log.getMessagesJson();
+        return dto;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ConversationDto {
+        public String sessionId;
+        public java.time.Instant startedAt;
+        public java.time.Instant endedAt;
+        public Integer messageCount;
+        public String closedReason;
+        public String deviceType;
+        public String deviceOs;
+        public String deviceBrowser;
+        public String clientFirstName;
+        public String clientLastName;
+        public String messagesJson;
+    }
+
 
     // ─────── Import / Export ───────
 

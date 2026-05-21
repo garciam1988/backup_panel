@@ -79,6 +79,13 @@ public class SecurityConfig {
                         // exponen DTOs acotados (sin metadata sensible).
                         .requestMatchers(HttpMethod.GET,  "/api/public/**").permitAll()
 
+                        // ── BotTools públicas para el CoinBot del cliente final ──
+                        // El GET /for-bot ya cae bajo `GET /api/public/**` de arriba.
+                        // El POST /execute lo declaramos explícito para que el
+                        // SecurityConfig sea autodocumentado y consistente con
+                        // los otros Public*Controller del bot.
+                        .requestMatchers(HttpMethod.POST, "/api/public/bot-tools/execute").permitAll()
+
                         // ── Marketing/Loyalty: PWA pública del cliente ──
                         // La PWA usa el customer_hash en la URL como bearer
                         // alternativo; no requiere JWT panel. Permitimos POST
