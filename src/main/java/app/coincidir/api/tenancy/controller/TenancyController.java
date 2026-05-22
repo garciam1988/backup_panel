@@ -84,9 +84,10 @@ public class TenancyController {
     @GetMapping("/branches")
     @Transactional(readOnly = true)
     public List<Map<String, Object>> branches() {
-        BranchScope scope = BranchContext.current();
-        if (scope == null) return List.of();
-        return branchRepo.findByBrandIdAndActiveTrueOrderByNameAsc(scope.getBrandId())
+        // Mismo fix que /branches/all: usar resolveCurrentBrand para soportar
+        // DIOS sin sucursal elegida (modo "Todas las sucursales").
+        Brand brand = resolveCurrentBrand();
+        return branchRepo.findByBrandIdAndActiveTrueOrderByNameAsc(brand.getId())
                 .stream()
                 .map(this::branchDto)
                 .toList();
@@ -96,6 +97,16 @@ public class TenancyController {
      * Lista TODAS las sucursales del brand actual (activas e inactivas) con
      * estadísticas básicas (cantidad de records, cantidad de users asignados).
      * Lo usa la pantalla de gestión.
+     *
+     * Fix Bloque 5: antes este endpoint requería un BranchContext resuelto
+     * (X-Branch-Id en header), pero eso rompía el caso de DIOS en modo
+     * "Todas las sucursales" — sin sucursal elegida en el chip → sin context
+     * → endpoint devolvía []. Peor todavía: la PRIMERA sucursal creada nunca
+     * se podía ver hasta que DIOS la eligiera, y para elegirla tenía que verla.
+     * Huevo y gallina.
+     *
+     * Solución: usar resolveCurrentBrand() (igual que create/update/delete),
+     * que tiene fallback "primera marca de la BD" cuando no hay context.
      */
     @GetMapping("/branches/all")
     @Transactional(readOnly = true)
@@ -105,9 +116,8 @@ public class TenancyController {
         if (auth == null || auth.getName() == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
-        BranchScope scope = BranchContext.current();
-        if (scope == null) return List.of();
-        return branchRepo.findByBrandIdOrderByNameAsc(scope.getBrandId())
+        Brand brand = resolveCurrentBrand();
+        return branchRepo.findByBrandIdOrderByNameAsc(brand.getId())
                 .stream()
                 .map(this::branchDtoWithStats)
                 .toList();
