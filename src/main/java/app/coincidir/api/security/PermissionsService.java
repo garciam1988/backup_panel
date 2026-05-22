@@ -148,6 +148,42 @@ public class PermissionsService {
         return userRepo.findByUsername(username).map(this::resolve).orElseGet(() -> resolve(null));
     }
 
+    /**
+     * Verifica que el usuario sea DIOS (fullAccess) o ADMIN (roleCode=="ADMIN").
+     * Lanza 403 si no.
+     *
+     * Lo usan los controllers de configuración global del bot (prompt, reglas,
+     * identidad, colors, api keys, backups, marketing, tools, integraciones,
+     * connectors, branches, usersAndRoles) — todo lo que es "config de la marca"
+     * y NO debería poder ser modificado por roles operativos por más que el
+     * DIOS le haya habilitado adminSections que incluyan esas keys.
+     *
+     * Modelo de seguridad:
+     *   - Frontend: oculta los menús de config global a roles operativos.
+     *   - Backend (este check): rechaza la llamada API aunque el usuario la
+     *     invoque a mano (curl, postman, etc).
+     *
+     * @param username el username del request (típicamente Principal.getName())
+     * @throws ResponseStatusException 401 si username null/blank, 403 si el rol
+     *         no es DIOS ni ADMIN.
+     */
+    public void requireDiosOrAdmin(String username) {
+        if (username == null || username.isBlank()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED,
+                    "Autenticación requerida");
+        }
+        EffectivePermissions perms = resolveByUsername(username);
+        if (perms.fullAccess()) return;
+        String code = perms.roleCode();
+        if (code != null && "ADMIN".equalsIgnoreCase(code)) return;
+        log.warn("[Security] User '{}' (role='{}') intentó operación global sin permiso",
+                username, code);
+        throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.FORBIDDEN,
+                "Esta operación requiere rol DIOS o ADMIN (configuración global del bot).");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers de serialización
     // ─────────────────────────────────────────────────────────────────────────

@@ -5,6 +5,9 @@ import app.coincidir.api.botplatform.domain.ExcelCatalogRow;
 import app.coincidir.api.botplatform.repository.ExcelCatalogRepository;
 import app.coincidir.api.botplatform.repository.ExcelCatalogRowRepository;
 import app.coincidir.api.botplatform.service.*;
+import app.coincidir.api.tenancy.access.BranchAccessGuard;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,6 +21,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -46,6 +50,7 @@ public class DataSourceController {
     private final DataSourceIngestService ingestService;
     private final RemoteFileDownloader downloader;
     private final DataSourceMigrationService migrationService;
+    private final BranchAccessGuard branchAccess;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ─────────────────────────────────────────────────────────────────────
@@ -54,14 +59,22 @@ public class DataSourceController {
     public DataSourceDto upload(
             @RequestParam("name") String name,
             @RequestParam(value = "description", required = false) String description,
+            @RequestParam(value = "branchId", required = false) Long requestedBranchId,
             @RequestParam("file") MultipartFile file,
             Authentication auth) throws Exception {
         if (file == null || file.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Archivo vacío");
         if (name == null || name.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nombre requerido");
 
+        String username = auth != null ? auth.getName() : null;
+        BranchScope scope = BranchContext.current();
+        Long scopeBranchId = (scope != null) ? scope.getBranchId() : null;
+        Long finalBranchId = branchAccess.resolveBranchForCreate(username, requestedBranchId, scopeBranchId);
+        branchAccess.requireWrite(username, finalBranchId);
+
         String uploadedBy = auth != null ? auth.getName() : "anonymous";
         String mime = DataSourceIngestService.normalizeMime(file.getContentType(), file.getOriginalFilename());
-        return ingestFileBytes(name, description, file.getOriginalFilename(), file.getBytes(), mime, "file", null, null, uploadedBy);
+        return ingestFileBytes(name, description, finalBranchId, file.getOriginalFilename(),
+                file.getBytes(), mime, "file", null, null, uploadedBy);
     }
 
     @PostMapping(path = "/from-url")
@@ -71,6 +84,12 @@ public class DataSourceController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "URL requerida");
         if (body.name == null || body.name.isBlank())
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nombre requerido");
+
+        String username = auth != null ? auth.getName() : null;
+        BranchScope scope = BranchContext.current();
+        Long scopeBranchId = (scope != null) ? scope.getBranchId() : null;
+        Long finalBranchId = branchAccess.resolveBranchForCreate(username, body.branchId, scopeBranchId);
+        branchAccess.requireWrite(username, finalBranchId);
 
         RemoteFileDownloader.DownloadResult dl;
         try {
@@ -87,7 +106,7 @@ public class DataSourceController {
         String uploadedBy = auth != null ? auth.getName() : "anonymous";
         String mime = DataSourceIngestService.normalizeMime(dl.mimeType, dl.filename);
         return ingestFileBytes(
-                body.name, body.description, dl.filename, dl.content, mime,
+                body.name, body.description, finalBranchId, dl.filename, dl.content, mime,
                 "url", body.url, body.autoRefreshHours, uploadedBy
         );
     }
@@ -97,6 +116,10 @@ public class DataSourceController {
     public DataSourceDto refresh(@PathVariable Long id, Authentication auth) throws Exception {
         ExcelCatalog cat = catalogRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Fuente no encontrada"));
+        // Para refrescar hay que poder escribir el recurso — chequear acceso.
+        String username = auth != null ? auth.getName() : null;
+        branchAccess.requireWrite(username, cat.getBranchId());
+
         if (!"url".equals(cat.getSourceType()) || cat.getOriginalUrl() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Esta fuente no es de URL, no se puede refrescar");
         }
@@ -109,8 +132,10 @@ public class DataSourceController {
 
         String uploadedBy = auth != null ? auth.getName() : "anonymous";
         String mime = DataSourceIngestService.normalizeMime(dl.mimeType, dl.filename);
+        // Preservar el branchId existente — refresh nunca cambia la sucursal.
         return ingestFileBytes(
-                cat.getName(), cat.getDescription(), dl.filename, dl.content, mime,
+                cat.getName(), cat.getDescription(), cat.getBranchId(),
+                dl.filename, dl.content, mime,
                 "url", cat.getOriginalUrl(), cat.getAutoRefreshHours(), uploadedBy
         );
     }
@@ -154,6 +179,13 @@ public class DataSourceController {
      *
      * Es un endpoint público del bot (no admin), por eso vive también en
      * /api/coinbot/data-sources/prompt-context.
+     *
+     * Tenancy (Bloque 2 + forward-compat Bloque 3):
+     *   - Si hay BranchContext en el request (DIOS con sucursal elegida, o el
+     *     bot público con identificar_sucursal ya ejecutado), se devuelven solo
+     *     las fuentes de esa branch + las globales.
+     *   - Sin scope (DIOS modo marca, o bot sin sucursal identificada todavía),
+     *     se devuelven TODAS las fuentes activas — comportamiento legacy.
      */
     @GetMapping("/prompt-context")
     @Transactional(readOnly = true)
@@ -162,7 +194,10 @@ public class DataSourceController {
         PromptContextResponse resp = new PromptContextResponse();
         resp.sources = new java.util.ArrayList<>();
 
-        java.util.List<ExcelCatalog> active = catalogRepo.findByActiveTrueOrderByNameAsc();
+        BranchScope scope = BranchContext.current();
+        java.util.List<ExcelCatalog> active = (scope != null)
+                ? catalogRepo.findActiveVisibleForBranchesOrderByNameAsc(List.of(scope.getBranchId()))
+                : catalogRepo.findByActiveTrueOrderByNameAsc();
         int usedTokens = 0;
 
         for (ExcelCatalog cat : active) {
@@ -203,7 +238,7 @@ public class DataSourceController {
     // Core ingest: toma bytes, parsea, guarda
     // ─────────────────────────────────────────────────────────────────────
     private DataSourceDto ingestFileBytes(
-            String name, String description, String originalFilename,
+            String name, String description, Long branchId, String originalFilename,
             byte[] content, String mimeType,
             String sourceType, String originalUrl, Integer autoRefreshHours,
             String uploadedBy
@@ -214,7 +249,7 @@ public class DataSourceController {
         if (DataSourceIngestService.isTabular(mimeType)) {
             MultipartFile mf = new ByteArrayMultipartFile(
                     "file", originalFilename, mimeType, content);
-            ExcelCatalog saved = catalogService.uploadCatalog(name, description, mf, uploadedBy);
+            ExcelCatalog saved = catalogService.uploadCatalog(name, description, branchId, mf, uploadedBy);
             // Actualizar metadata de fuente
             saved.setSourceType(sourceType);
             saved.setMimeType(mimeType);
@@ -224,10 +259,13 @@ public class DataSourceController {
             return toDto(catalogRepo.save(saved));
         }
 
-        // Para los demás, extraemos texto y guardamos en extractedText
-        Optional<ExcelCatalog> existing = catalogRepo.findByName(name);
+        // Para los demás, extraemos texto y guardamos en extractedText.
+        // Lookup por (name, branchId) para no chocar con un catálogo del mismo
+        // nombre en otra sucursal.
+        Optional<ExcelCatalog> existing = catalogRepo.findByNameAndBranchId(name, branchId);
         ExcelCatalog cat = existing.orElseGet(ExcelCatalog::new);
         cat.setName(name);
+        cat.setBranchId(branchId);
         if (description != null) cat.setDescription(description);
         cat.setOriginalFilename(originalFilename);
         cat.setSizeBytes((long) content.length);
@@ -259,6 +297,7 @@ public class DataSourceController {
         d.id                = c.getId();
         d.name              = c.getName();
         d.description       = c.getDescription();
+        d.branchId          = c.getBranchId();
         d.originalFilename  = c.getOriginalFilename();
         d.sizeBytes         = c.getSizeBytes();
         d.totalRows         = c.getTotalRows();
@@ -348,6 +387,8 @@ public class DataSourceController {
         public String description;
         public String url;
         public Integer autoRefreshHours; // null = no refresh
+        /** Sucursal a la que pertenece. Null = global. Para gerentes se ignora y se fuerza al scope. */
+        public Long branchId;
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -369,6 +410,7 @@ public class DataSourceController {
         public Long id;
         public String name;
         public String description;
+        public Long branchId;        // null = global
         public String originalFilename;
         public Long sizeBytes;
         public Integer totalRows;
@@ -413,7 +455,12 @@ public class DataSourceController {
      */
     @GetMapping("/{id}/migration-preview")
     @Transactional(readOnly = true)
-    public DataSourceMigrationService.MigrationPreview migrationPreview(@PathVariable Long id) {
+    public DataSourceMigrationService.MigrationPreview migrationPreview(
+            @PathVariable Long id, Authentication auth) {
+        String username = auth != null ? auth.getName() : null;
+        ExcelCatalog cat = catalogRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Fuente no encontrada"));
+        branchAccess.requireRead(username, cat.getBranchId());
         try {
             return migrationService.preview(id);
         } catch (IllegalArgumentException e) {
@@ -425,13 +472,23 @@ public class DataSourceController {
      * Ejecuta la migración: crea BotTable + records, desactiva la Fuente.
      * Body: { slug?, name?, injectFields? } — los 3 son opcionales (si no
      * se envía slug/name se usan los sugeridos del preview).
+     *
+     * Nota: las BotTable resultantes son globales (BotTable no tiene branch_id
+     * a nivel tabla, solo en records). El catálogo origen se desactiva tras
+     * migrar — para evitar duplicación de info — y eso solo lo puede hacer
+     * quien tiene write sobre ese catálogo.
      */
     @PostMapping("/{id}/migrate-to-bot-table")
     @Transactional
     public DataSourceMigrationService.MigrationResult migrate(
             @PathVariable Long id,
-            @RequestBody(required = false) DataSourceMigrationService.MigrationRequest req) {
+            @RequestBody(required = false) DataSourceMigrationService.MigrationRequest req,
+            Authentication auth) {
         if (req == null) req = new DataSourceMigrationService.MigrationRequest();
+        String username = auth != null ? auth.getName() : null;
+        ExcelCatalog cat = catalogRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Fuente no encontrada"));
+        branchAccess.requireWrite(username, cat.getBranchId());
         try {
             return migrationService.migrate(id, req);
         } catch (IllegalArgumentException e) {

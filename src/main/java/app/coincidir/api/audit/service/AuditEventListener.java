@@ -69,6 +69,10 @@ public class AuditEventListener {
             log.setEntityLabel(event.getEntityLabel());
             log.setModule(event.getModule());
             log.setSource(event.getSource() != null ? event.getSource() : event.getModule());
+            // Tenancy: capturado por AuditService desde BranchContext.current().
+            // Si la acción fue de un job interno sin scope, queda null y el
+            // bootstrap lo backfillea a la default en el próximo arranque.
+            log.setBranchId(event.getCapturedBranchId());
 
             // ── Quién: resolvemos del evento (capturado sincrónicamente) ──
             resolveUser(log, event);

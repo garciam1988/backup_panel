@@ -9,6 +9,8 @@ import app.coincidir.api.marketing.domain.LoyaltyCustomer;
 import app.coincidir.api.marketing.repository.LoyaltyCustomerRepository;
 import app.coincidir.api.marketing.util.PhoneNormalizer;
 import app.coincidir.api.repository.ConversationLogRepository;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -58,7 +60,18 @@ public class ClientesService {
      */
     @Transactional(readOnly = true)
     public List<ClienteDto> listAll() {
-        List<ConversationLog> conversations = convRepo.findAll();
+        // Tenancy auto-filtro:
+        //   - Si hay branch en el contexto del request (DIOS eligió una sucursal,
+        //     o user no-DIOS scopeado), traemos SOLO las conversaciones de esa
+        //     branch. Las legacy con branch_id NULL no se incluyen.
+        //   - Si no hay branch (DIOS modo "marca" sin elegir), traemos todas.
+        //
+        // Las reservas (BotTableRecord) ya están auto-filtradas por branch en
+        // loadAllReservations() (Bloque 3).
+        BranchScope scope = BranchContext.current();
+        List<ConversationLog> conversations = (scope != null)
+                ? convRepo.findByBranchId(scope.getBranchId())
+                : convRepo.findAll();
         List<BotTableRecord> reservations = loadAllReservations();
 
         // Indexar reservas por clave de cliente para lookup rápido.
@@ -142,14 +155,34 @@ public class ClientesService {
         //     bot → enriquecemos el DTO existente con loyaltyEnrolled=true.
         //   - Si NO está cubierto → agregamos un cliente nuevo con
         //     source="MARKETING_ONLY".
+        //
+        // Tenancy (opción A — "el cliente pertenece a la sucursal donde le
+        // abrieron la ficha"):
+        //   - Si hay branch en el contexto (gerente o DIOS con sucursal
+        //     elegida), el loyalty solo se incluye si la reserva que lo
+        //     enroló pertenece a esa misma branch. Loyalty sin reserva
+        //     (enrolamiento manual / QR / migration) NO se incluye con
+        //     scope — no hay forma de atribuirlo a una sucursal específica.
+        //   - Sin scope (DIOS modo marca), se incluye todo como antes.
+        //
+        // El "enriquecimiento" del DTO existente (caso `coveredPhones`) sí
+        // se hace siempre que el loyalty exista, sin importar branch: si el
+        // cliente ya tiene una reserva visible en esta sucursal, marcarlo
+        // como loyalty no filtra data extra — solo agrega badge y hash.
         try {
             List<LoyaltyCustomer> loyalty = loyaltyRepo.findByDeletedAtIsNullOrderByEnrolledAtDesc();
+            BranchScope scopeForLoyalty = BranchContext.current();
+            Long scopedBranchId = (scopeForLoyalty != null) ? scopeForLoyalty.getBranchId() : null;
+
             for (LoyaltyCustomer lc : loyalty) {
                 String np = lc.getPhone(); // ya está en E.164
                 if (np == null) continue;
 
                 if (coveredPhones.contains(np)) {
-                    // Ya existe como cliente del bot — enriquecer
+                    // Ya existe como cliente del bot en esta branch — enriquecer.
+                    // Acá no filtramos por branch del loyalty: si el cliente ya
+                    // está visible por su reserva, el badge de loyalty es info
+                    // adicional, no es un cliente "extra".
                     for (ClienteDto existing : out) {
                         String ep = existing.telefono != null
                             ? PhoneNormalizer.normalize(existing.telefono) : null;
@@ -166,6 +199,27 @@ public class ClientesService {
                         }
                     }
                 } else {
+                    // Loyalty sin reserva en esta branch → candidato a MARKETING_ONLY.
+                    // Con scope activo, aplicamos la regla de pertenencia opción A:
+                    // solo lo mostramos si la reserva enroladora es de esta branch.
+                    if (scopedBranchId != null) {
+                        Long enrollerRecordId = lc.getReservationRecordId();
+                        if (enrollerRecordId == null) {
+                            // Loyalty sin reserva enroladora (manual / QR / migration)
+                            // — sin forma confiable de atribuirlo a una sucursal,
+                            // lo escondemos del listado scoped.
+                            continue;
+                        }
+                        Long enrollerBranchId = recordRepo.findById(enrollerRecordId)
+                                .map(BotTableRecord::getBranchId)
+                                .orElse(null);
+                        if (enrollerBranchId == null || !scopedBranchId.equals(enrollerBranchId)) {
+                            // La reserva enroladora pertenece a otra branch
+                            // (o quedó con branch_id NULL): no mostrar.
+                            continue;
+                        }
+                    }
+
                     // Marketing-only: agregar como cliente nuevo
                     ClienteDto dto = new ClienteDto();
                     dto.clienteKey = "loyalty:" + lc.getCustomerHash();
@@ -235,12 +289,26 @@ public class ClientesService {
     public ClienteDetalleDto detail(String clienteKey) {
         if (clienteKey == null || clienteKey.isBlank()) return null;
 
-        // Si la key es de un cliente loyalty-only (sin reservas), buscar directo
+        // Si la key es de un cliente loyalty-only (sin reservas), buscar directo.
+        // Aplicamos la misma regla de pertenencia (opción A) que en listAll:
+        // con scope activo, solo devolvemos el loyalty si su reserva enroladora
+        // pertenece a la branch del contexto. Sin esto, un gerente podría
+        // abrir el detalle de un loyalty de otra sucursal adivinando el hash.
         if (clienteKey.startsWith("loyalty:")) {
             String hash = clienteKey.substring("loyalty:".length());
             return loyaltyRepo.findAll().stream()
                     .filter(lc -> hash.equals(lc.getCustomerHash()))
                     .findFirst()
+                    .filter(lc -> {
+                        BranchScope scopeLoy = BranchContext.current();
+                        if (scopeLoy == null) return true; // DIOS modo marca ve todo
+                        Long enrollerRecordId = lc.getReservationRecordId();
+                        if (enrollerRecordId == null) return false;
+                        Long enrollerBranchId = recordRepo.findById(enrollerRecordId)
+                                .map(BotTableRecord::getBranchId)
+                                .orElse(null);
+                        return scopeLoy.getBranchId().equals(enrollerBranchId);
+                    })
                     .map(lc -> {
                         ClienteDetalleDto out = new ClienteDetalleDto();
                         ClienteDto dto = new ClienteDto();
@@ -267,7 +335,12 @@ public class ClientesService {
         }
 
         List<BotTableRecord> reservations = loadAllReservations();
-        List<ConversationLog> conversations = convRepo.findAll();
+        // Tenancy: misma lógica que en listAll — si hay branch en contexto,
+        // filtramos conversaciones a esa branch.
+        BranchScope scopeDetail = BranchContext.current();
+        List<ConversationLog> conversations = (scopeDetail != null)
+                ? convRepo.findByBranchId(scopeDetail.getBranchId())
+                : convRepo.findAll();
 
         List<ReservaInfo> reservas = new ArrayList<>();
         // Set de keys candidatas que pertenecen a este cliente — armado desde
@@ -358,13 +431,18 @@ public class ClientesService {
                 .filter(t -> t.getEmailColumn() != null && !t.getEmailColumn().isBlank())
                 .toList();
 
+        // Tenancy auto-filtro: si hay branch en contexto, filtramos las
+        // reservas a esa sucursal. Si no, las traemos todas (modo marca).
+        BranchScope scope = BranchContext.current();
         List<BotTableRecord> all = new ArrayList<>();
         for (BotTable t : clientTables) {
-            all.addAll(recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId()));
+            if (scope != null) {
+                all.addAll(recordRepo.findByTableIdAndBranchIdOrderByCreatedAtDesc(
+                        t.getId(), scope.getBranchId()));
+            } else {
+                all.addAll(recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId()));
+            }
         }
-        // También devolvemos qué tabla viene cada record (para mostrar en el detalle)
-        // Pero como el record solo tiene tableId, esto se resuelve en parseReservaRecord
-        // que mira la tabla por ID.
         return all;
     }
 

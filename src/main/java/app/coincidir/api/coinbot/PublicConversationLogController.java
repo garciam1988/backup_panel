@@ -84,6 +84,12 @@ public class PublicConversationLogController {
             e.setDeviceBrowser(body.deviceBrowser);
             e.setUserAgent(req.getHeader("User-Agent"));
             e.setIpAddress(resolveClientIp(req));
+            // Sucursal: la incluimos en INSERT desde el payload del bot.
+            // En UPDATE no la pisamos: si el cliente cambió de sucursal a
+            // mitad de la charla, eso debería ser una nueva conversación.
+            // Si el bot la mandó null (cliente nunca eligió), el log queda
+            // sin branch — esos son los logs "anónimos de sucursal".
+            e.setBranchId(body.branchId);
         }
 
         // Resolver geolocalización si NO está poblada todavía. Esto cubre dos casos:
@@ -122,6 +128,16 @@ public class PublicConversationLogController {
         // pierde campos que la primera sí había detectado.
         String mergedExtra = mergeClientExtraJson(e.getClientExtraJson(), body.clientExtraJson);
         if (mergedExtra != null) e.setClientExtraJson(mergedExtra);
+
+        // Caso edge: UPDATE de una conversación que tenía branchId NULL
+        // pero ahora el cliente eligió. Completamos. Si ya tenía branch,
+        // no la tocamos (no permitimos "cambiar" de sucursal en una misma
+        // conversación, sería confuso).
+        if (isUpdate && e.getBranchId() == null && body.branchId != null) {
+            e.setBranchId(body.branchId);
+            log.info("[public] conversation_log id={} completada con branchId={} (antes era NULL)",
+                    e.getId(), body.branchId);
+        }
 
         // hadReservation: sticky TRUE. Si alguna vez la charla disparó una
         // tool de escritura (add_record/update_record/delete_record), queda
@@ -175,9 +191,9 @@ public class PublicConversationLogController {
         e.setEndedAt(body.endedAt != null ? body.endedAt : Instant.now());
 
         ConversationLog saved = repo.save(e);
-        log.info("[public] conversation_log {} id={} brand={} anon={} hadRes={} msgs={} reason={} visitor={}",
+        log.info("[public] conversation_log {} id={} brand={} branch={} anon={} hadRes={} msgs={} reason={} visitor={}",
                 isUpdate ? "UPDATED" : "CREATED",
-                saved.getId(), saved.getBrandName(), saved.getIsAnonymous(),
+                saved.getId(), saved.getBrandName(), saved.getBranchId(), saved.getIsAnonymous(),
                 saved.getHadReservation(),
                 saved.getMessageCount(), saved.getClosedReason(), saved.getVisitorId());
 
@@ -284,6 +300,14 @@ public class PublicConversationLogController {
         public String deviceType;
         public String deviceOs;
         public String deviceBrowser;
+        /**
+         * Sucursal donde se desarrolló la conversación. El bot frontend lo
+         * incluye en el payload porque sendBeacon NO permite custom headers
+         * (es la API usada al cerrar pestaña). Si el cliente eligió sucursal
+         * vía la tool identificar_sucursal, este valor llega seteado;
+         * si nunca eligió, llega null y el log queda sin atribución.
+         */
+        public Long   branchId;
         public String messagesJson;
         public Integer messageCount;
         public String closedReason;

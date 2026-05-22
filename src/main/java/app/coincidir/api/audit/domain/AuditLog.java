@@ -30,7 +30,8 @@ import java.time.Instant;
         @Index(name = "idx_audit_ts",     columnList = "ts"),
         @Index(name = "idx_audit_user",   columnList = "user_id"),
         @Index(name = "idx_audit_action", columnList = "action"),
-        @Index(name = "idx_audit_entity", columnList = "entity_type,entity_id")
+        @Index(name = "idx_audit_entity", columnList = "entity_type,entity_id"),
+        @Index(name = "idx_audit_branch", columnList = "branch_id")
 })
 @Getter @Setter
 public class AuditLog {
@@ -42,6 +43,20 @@ public class AuditLog {
     /** Momento exacto de la acción. */
     @Column(name = "ts", nullable = false)
     private Instant ts;
+
+    /**
+     * Sucursal en la que se ejecutó la acción. NULL para acciones del sistema
+     * (jobs) y para acciones legacy pre-Bloque-6. El bootstrap rellena los
+     * legacy con la branch default al arrancar.
+     *
+     * Para acciones globales (crear marca, modificar config global de bot),
+     * el BranchContext del request igual va a tener la branch que el user
+     * tenía activa al momento — eso es informativo pero no implica que la
+     * acción "fue por sucursal", solo "se hizo desde". Es información útil
+     * para reconstruir el contexto temporal.
+     */
+    @Column(name = "branch_id")
+    private Long branchId;
 
     // ── Quién ─────────────────────────────────────────────────────────────
 

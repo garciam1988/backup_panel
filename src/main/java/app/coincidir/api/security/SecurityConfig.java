@@ -1,8 +1,11 @@
 package app.coincidir.api.security;
 
+import app.coincidir.api.tenancy.filter.BranchResolverFilter;
+import app.coincidir.api.tenancy.service.BranchResolverService;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -32,6 +35,33 @@ public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
     private final RequestIdFilter requestIdFilter;
+    private final BranchResolverService branchResolverService;
+    private final DiosOrAdminFilter diosOrAdminFilter;
+
+    /**
+     * BranchResolverFilter como @Bean (no @Component) para que Spring Boot
+     * NO lo agregue automáticamente al chain — lo registramos abajo a mano
+     * con addFilterAfter para garantizar que corre justo después del JWT.
+     */
+    @Bean
+    BranchResolverFilter branchResolverFilter() {
+        return new BranchResolverFilter(branchResolverService);
+    }
+
+    /**
+     * Deshabilita el registro automático de DiosOrAdminFilter en el chain
+     * global de servlets. Sino correría DOS veces: una via @Component que
+     * Spring Boot auto-registra, y otra via addFilterAfter abajo en el
+     * SecurityFilterChain. Acá decimos: "no lo agregues solo, ya yo lo
+     * agrego donde quiero (después del BranchResolverFilter)".
+     */
+    @Bean
+    FilterRegistrationBean<DiosOrAdminFilter> disableDiosOrAdminGlobalRegistration(
+            DiosOrAdminFilter filter) {
+        FilterRegistrationBean<DiosOrAdminFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
 
     @Bean
     SecurityFilterChain security(HttpSecurity http) throws Exception {
@@ -140,7 +170,17 @@ public class SecurityConfig {
                         })
                 )
                 .addFilterBefore(requestIdFilter, UsernamePasswordAuthenticationFilter.class)
-                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                // BranchResolverFilter va DESPUÉS del JWT para tener la auth ya
+                // resuelta — útil cuando agreguemos user_branch_access (bloque 7).
+                // Hoy no usa el principal, pero el orden ya queda preparado.
+                .addFilterAfter(branchResolverFilter(), JwtAuthFilter.class)
+                // DiosOrAdminFilter: bloquea endpoints de config global del bot
+                // (prompt, reglas, identidad, api keys, tools, marketing, etc)
+                // a usuarios que NO sean DIOS o ADMIN. Va después de BranchResolver
+                // para que el log de denegación pueda incluir el contexto del user
+                // si quisiéramos. Lista de paths protegidos en la propia clase.
+                .addFilterAfter(diosOrAdminFilter, BranchResolverFilter.class);
 
         return http.build();
     }
@@ -223,7 +263,14 @@ public class SecurityConfig {
 
         ));
         cfg.setAllowedMethods(List.of("GET","POST","PUT","PATCH","DELETE","OPTIONS"));
-        cfg.setAllowedHeaders(List.of("Authorization","Content-Type","Accept","Origin","X-Requested-With","X-Request-Id"));
+        // X-Branch-Id, X-Brand-Slug, X-Branch-Slug → headers de tenancy.
+        // Sin estos en la lista, el browser hace preflight OK (200) pero
+        // bloquea el fetch real por CORS — síntoma: errores "CORS error"
+        // en Network y respuestas vacías en el admin.
+        cfg.setAllowedHeaders(List.of(
+            "Authorization","Content-Type","Accept","Origin","X-Requested-With","X-Request-Id",
+            "X-Branch-Id","X-Brand-Slug","X-Branch-Slug"
+        ));
         cfg.setExposedHeaders(List.of("Authorization","X-Request-Id")); // si expones el token
         cfg.setAllowCredentials(true);
         cfg.setMaxAge(3600L);

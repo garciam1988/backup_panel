@@ -5,6 +5,8 @@ import app.coincidir.api.botplatform.domain.BotTableRecord;
 import app.coincidir.api.botplatform.domain.ProactiveRule;
 import app.coincidir.api.botplatform.repository.BotTableRecordRepository;
 import app.coincidir.api.botplatform.repository.BotTableRepository;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -515,7 +517,24 @@ public class BotTableService {
         int limit = Math.min(200, Math.max(1, args.path("limit").asInt(50)));
         JsonNode filter = args.path("filter");
 
-        List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+        // ── Tenancy: filtrar por branch del contexto ────────────────────
+        //
+        // Si hay contexto (caso normal: bot público o admin), traemos solo
+        // los records de esa branch. Si NO hay contexto (caso edge: el caller
+        // no pasó por el filter), caemos al comportamiento legacy y traemos
+        // todo (con warning).
+        BranchScope scope = BranchContext.current();
+        List<BotTableRecord> all;
+        if (scope != null) {
+            all = recordRepo.findByTableIdAndBranchIdOrderByCreatedAtDesc(t.getId(), scope.getBranchId());
+        } else if (BranchContext.isCrossBranch()) {
+            log.debug("[BotTable] doQuery cross-branch (todas las sucursales): tabla={}", slug);
+            all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+        } else {
+            log.warn("[BotTable] doQuery sin BranchContext — devolviendo TODOS los records (tabla={})", slug);
+            all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+        }
+
         ArrayNode out = objectMapper.createArrayNode();
         int matched = 0;
         for (BotTableRecord rec : all) {
@@ -598,8 +617,37 @@ public class BotTableService {
         if (sessionId != null && !sessionId.isBlank()) {
             rec.setSessionId(sessionId);
         }
+
+        // ── Tenancy: asignar branch del contexto ─────────────────────────
+        //
+        // En el bot público, el frontend manda X-Branch-Id en cada request
+        // (lo guardó en su estado cuando el cliente eligió sucursal).
+        // En requests del admin, el filter también arma el contexto.
+        //
+        // Si NO hay contexto:
+        //   - Si es modo cross-branch deliberado (DIOS + X-Branch-All=true):
+        //     rechazamos. No tiene sentido crear un record sin saber a qué
+        //     branch atribuírselo.
+        //   - Si es ausencia accidental (job interno, etc): dejamos branchId
+        //     null y logueamos warning. El bootstrap rellenará después.
+        BranchScope scope = BranchContext.current();
+        if (scope != null) {
+            rec.setBranchId(scope.getBranchId());
+        } else if (BranchContext.isCrossBranch()) {
+            r.ok = false;
+            ObjectNode err = objectMapper.createObjectNode();
+            err.put("error", "cross_branch_write_not_allowed");
+            err.put("message", "Estás en modo 'Todas las sucursales'. Para crear un registro elegí una sucursal específica primero.");
+            r.output = err.toString();
+            return r;
+        } else {
+            log.warn("[BotTable] doAdd sin BranchContext — record quedará sin branch_id (tabla={}). " +
+                    "El bootstrap lo asignará a la default en el próximo arranque.", slug);
+        }
+
         rec = recordRepo.save(rec);
-        log.info("[BotTable] doAdd INSERT ok: tabla={} record_id={}", slug, rec.getId());
+        log.info("[BotTable] doAdd INSERT ok: tabla={} record_id={} branch_id={}",
+                slug, rec.getId(), rec.getBranchId());
 
         // Aplicar columnas auto-generadas ahora que el record tiene id real.
         // Si hay alguna columna `auto: true`, calculamos su valor (usando id,
@@ -650,6 +698,31 @@ public class BotTableService {
             throw new SchemaError("Registro " + id + " no encontrado en tabla '" + slug + "'");
 
         BotTableRecord rec = opt.get();
+
+        // ── Tenancy: validar que el record pertenezca a la branch activa ──
+        //
+        // Bloque 7: si el request es modo cross-branch (DIOS + X-Branch-All),
+        // rechazamos las escrituras. DIOS tiene que elegir una sucursal
+        // específica para modificar datos (evita errores como editar la
+        // reserva "incorrecta" porque venía data mezclada de varias).
+        //
+        // Si hay scope normal: validamos que el record pertenezca a esa branch.
+        if (BranchContext.isCrossBranch()) {
+            r.ok = false;
+            ObjectNode err = objectMapper.createObjectNode();
+            err.put("error", "cross_branch_write_not_allowed");
+            err.put("message", "Estás en modo 'Todas las sucursales'. Para modificar un registro elegí la sucursal específica primero.");
+            r.output = err.toString();
+            return r;
+        }
+        BranchScope scope = BranchContext.current();
+        if (scope != null && rec.getBranchId() != null
+                && !rec.getBranchId().equals(scope.getBranchId())) {
+            log.warn("[BotTable] doUpdate cross-branch BLOQUEADO: tabla={} record_id={} record_branch={} ctx_branch={}",
+                    slug, id, rec.getBranchId(), scope.getBranchId());
+            throw new SchemaError("Registro " + id + " no encontrado en tabla '" + slug + "'");
+        }
+
         // Merge: cargar data actual + aplicar patch + validar todo
         ObjectNode merged = (ObjectNode) objectMapper.readTree(rec.getDataJson());
         if (patch != null && patch.isObject()) {
@@ -698,6 +771,22 @@ public class BotTableService {
             throw new SchemaError("Registro " + id + " no encontrado en tabla '" + slug + "'");
 
         BotTableRecord toDelete = opt.get();
+
+        // ── Tenancy: validar branch (igual que en doUpdate) ──────────────
+        if (BranchContext.isCrossBranch()) {
+            r.ok = false;
+            r.output = "{\"error\":\"cross_branch_write_not_allowed\"," +
+                       "\"message\":\"Estás en modo 'Todas las sucursales'. Para borrar un registro elegí la sucursal específica primero.\"}";
+            return r;
+        }
+        BranchScope scope = BranchContext.current();
+        if (scope != null && toDelete.getBranchId() != null
+                && !toDelete.getBranchId().equals(scope.getBranchId())) {
+            log.warn("[BotTable] doDelete cross-branch BLOQUEADO: tabla={} record_id={} record_branch={} ctx_branch={}",
+                    slug, id, toDelete.getBranchId(), scope.getBranchId());
+            throw new SchemaError("Registro " + id + " no encontrado en tabla '" + slug + "'");
+        }
+
         // Disparamos evento "cancelled" ANTES de borrar — el listener necesita
         // poder leer los datos del registro (ej: el email del cliente para mandarle
         // la notificación de cancelación). El evento se publica sincrónicamente
@@ -746,18 +835,34 @@ public class BotTableService {
         String slug = args.path("table").asText("");
         BotTable t = mustFindTable(slug);
 
+        // ── Tenancy: scope del request ──────────────────────────────────
+        // Si hay contexto, filtramos por branch del scope; si no, fallback
+        // a all (con warning, igual que en doQuery).
+        BranchScope scope = BranchContext.current();
+
         BotTableRecord rec = null;
         if (args.has("id") && !args.path("id").isNull()) {
             long id = args.path("id").asLong();
             Optional<BotTableRecord> opt = recordRepo.findById(id);
             if (opt.isPresent() && opt.get().getTableId().equals(t.getId())) {
-                rec = opt.get();
+                BotTableRecord candidate = opt.get();
+                // Validar branch antes de devolver
+                if (scope == null || candidate.getBranchId() == null
+                        || candidate.getBranchId().equals(scope.getBranchId())) {
+                    rec = candidate;
+                } else {
+                    log.warn("[BotTable] doGetDetail cross-branch BLOQUEADO: tabla={} record_id={} record_branch={} ctx_branch={}",
+                            slug, id, candidate.getBranchId(), scope.getBranchId());
+                }
             }
         } else if (args.has("matchField") && args.has("matchValue")) {
             String field = args.path("matchField").asText("");
             String value = args.path("matchValue").asText("");
             if (!field.isBlank() && !value.isBlank()) {
-                List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+                // Buscar solo dentro de la branch del scope (o todas si no hay scope)
+                List<BotTableRecord> all = scope != null
+                        ? recordRepo.findByTableIdAndBranchIdOrderByCreatedAtDesc(t.getId(), scope.getBranchId())
+                        : recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
                 String valueLower = value.toLowerCase();
                 for (BotTableRecord candidate : all) {
                     JsonNode data = objectMapper.readTree(candidate.getDataJson());

@@ -1,6 +1,8 @@
 package app.coincidir.api.audit.service;
 
 import app.coincidir.api.audit.event.AuditEvent;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -103,6 +105,15 @@ public class AuditService {
             String capturedIp = captureCurrentIp();
             String capturedUserAgent = captureCurrentUserAgent();
 
+            // Capturamos el branch del contexto sincrónicamente — el listener
+            // corre @Async y ahí el ThreadLocal del filter ya está limpio.
+            // Si no hay scope (caso edge: job interno sin request), queda null.
+            Long capturedBranchId = null;
+            try {
+                BranchScope scope = BranchContext.current();
+                if (scope != null) capturedBranchId = scope.getBranchId();
+            } catch (Exception ignored) {}
+
             AuditEvent event = AuditEvent.builder()
                 .action(action)
                 .entityType(entityType)
@@ -116,6 +127,7 @@ public class AuditService {
                 .capturedUsername(capturedUsername)
                 .capturedIp(capturedIp)
                 .capturedUserAgent(capturedUserAgent)
+                .capturedBranchId(capturedBranchId)
                 .build();
 
             eventPublisher.publishEvent(event);

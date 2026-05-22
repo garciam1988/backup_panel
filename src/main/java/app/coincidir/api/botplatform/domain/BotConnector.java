@@ -18,7 +18,11 @@ import java.time.Instant;
  */
 @Entity
 @Table(name = "bot_connector", uniqueConstraints = {
-        @UniqueConstraint(name = "uk_bot_connector_name", columnNames = "name")
+        // Antes era unique(name) global. Ahora el nombre es único POR sucursal:
+        // dos sucursales pueden tener un connector "pos_principal" cada una
+        // apuntando a su propio sistema, y además puede existir un "pos_principal"
+        // global con branch_id=NULL (NULLs no colisionan en UNIQUE en MySQL).
+        @UniqueConstraint(name = "uk_bot_connector_name_branch", columnNames = {"name", "branch_id"})
 })
 @Getter @Setter
 public class BotConnector {
@@ -41,6 +45,28 @@ public class BotConnector {
 
     @Column(name = "description", length = 300)
     private String description;
+
+    /**
+     * Sucursal a la que pertenece este connector.
+     *
+     *   - Valor != null: connector "de esa sucursal" — por ej. cada local puede
+     *     tener su propio POS o su propia base de datos de stock. Solo lo ve y
+     *     lo administra quien tenga acceso a esa branch (o DIOS). Las tools
+     *     generadas a partir de este connector solo se exponen al bot cuando
+     *     la conversación está scopeada a esa branch.
+     *
+     *   - Valor null: connector "global a la marca". Para casos donde todas las
+     *     sucursales comparten la misma BD central (ej: padrón único de clientes,
+     *     sistema corporativo).
+     *
+     * IMPORTANTE: En Bloque 1 solo se agrega la columna. La lógica de filtrado
+     * de tools generadas por branch se implementa en bloques posteriores cuando
+     * haya un cliente real usando connectors multi-sucursal. Hoy la columna
+     * existe para no tener que migrar después; queda en NULL para todos los
+     * connectors existentes (= global = comportamiento idéntico al actual).
+     */
+    @Column(name = "branch_id")
+    private Long branchId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "db_type", nullable = false, length = 20)

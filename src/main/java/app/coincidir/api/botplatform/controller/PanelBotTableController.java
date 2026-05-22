@@ -12,6 +12,8 @@ import app.coincidir.api.botplatform.service.BotTableService;
 import app.coincidir.api.botplatform.service.PanelBotTableService;
 import app.coincidir.api.domain.ConversationLog;
 import app.coincidir.api.repository.ConversationLogRepository;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -112,7 +114,18 @@ public class PanelBotTableController {
             toDt = toDt.toLocalDate().atTime(23, 59, 59);
         }
 
-        List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+        // Tenancy: filtramos por la branch del contexto del request.
+        //   - User no-DIOS: el BranchResolverFilter resolvió su única branch
+        //     (o la preferida) y la metió en el ThreadLocal. Solo ve la suya.
+        //   - DIOS sin elegir sucursal: scope=null, mostramos TODO (modo marca).
+        //   - DIOS con sucursal elegida: scope a esa branch, ve solo eso.
+        BranchScope scope = BranchContext.current();
+        Long branchFilter = (scope != null) ? scope.getBranchId() : null;
+
+        List<BotTableRecord> all = (branchFilter != null)
+                ? recordRepo.findByTableIdAndBranchIdOrderByCreatedAtDesc(t.getId(), branchFilter)
+                : recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+
         List<RecordDto> out = new ArrayList<>();
         for (BotTableRecord r : all) {
             JsonNode data;
@@ -176,6 +189,19 @@ public class PanelBotTableController {
             rec.setTableId(t.getId());
             rec.setDataJson(normalized);
             rec.setSource("admin"); // creado desde panel ≈ admin
+
+            // Tenancy: el record nace en la branch del contexto del request.
+            // Para users no-DIOS, esa es la branch del JWT (resuelta por el
+            // BranchResolverFilter). Para DIOS con branch elegida, esa branch.
+            // Si DIOS no eligió (scope=null), el record queda sin branch — eso
+            // es raro y debería evitarse en UI, pero técnicamente vale.
+            BranchScope scopeCreate = BranchContext.current();
+            if (scopeCreate != null) {
+                rec.setBranchId(scopeCreate.getBranchId());
+            } else {
+                log.warn("[Panel] createRecord sin branch en contexto — record id quedará sin atribución (tableId={})", t.getId());
+            }
+
             rec = recordRepo.save(rec);
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created")); } catch (Exception ignored) {}
 
@@ -209,6 +235,7 @@ public class PanelBotTableController {
                                            @RequestBody RecordSaveRequest req) {
         BotTableRecord rec = recordRepo.findById(recordId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        requireSameBranch(rec, "actualizar");
         BotTable t = requirePanelEnabled(rec.getTableId());
 
         // Snapshot del estado PREVIO para el diff de auditoría. Lo tomamos
@@ -297,6 +324,7 @@ public class PanelBotTableController {
         Optional<BotTableRecord> opt = recordRepo.findById(recordId);
         if (opt.isEmpty()) return;
         BotTableRecord rec = opt.get();
+        requireSameBranch(rec, "eliminar");
         BotTable t = tableRepo.findById(rec.getTableId()).orElse(null);
 
         // Snapshot del estado previo para el audit log (antes de borrar).
@@ -368,6 +396,7 @@ public class PanelBotTableController {
         if (!Objects.equals(rec.getTableId(), t.getId())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El record no pertenece a esta tabla");
         }
+        requireSameBranch(rec, "consultar la conversación de");
 
         // 3) Si el record no tiene session_id, no hay chat asociado.
         String sessionId = rec.getSessionId();
@@ -437,6 +466,7 @@ public class PanelBotTableController {
         if (!Objects.equals(rec.getTableId(), t.getId())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El record no pertenece a esta tabla");
         }
+        requireSameBranch(rec, "ver el historial de");
 
         // entityType en el audit log es el nombre de la BotTable (ej "Reservas").
         // Lo pasamos para filtrar más preciso aunque entityId ya sea único.
@@ -502,7 +532,14 @@ public class PanelBotTableController {
         LocalDateTime toDt   = parseFlexible(to);
         if (to != null && to.length() == 10 && toDt != null) toDt = toDt.toLocalDate().atTime(23, 59, 59);
 
-        List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
+        // Tenancy: stats también deben respetar la branch del contexto.
+        // Si no, el gerente de Villa Crespo vería el dashboard global.
+        BranchScope scope = BranchContext.current();
+        Long branchFilter = (scope != null) ? scope.getBranchId() : null;
+
+        List<BotTableRecord> all = (branchFilter != null)
+                ? recordRepo.findByTableIdAndBranchIdOrderByCreatedAtDesc(t.getId(), branchFilter)
+                : recordRepo.findByTableIdOrderByCreatedAtDesc(t.getId());
         long total = 0;
         Map<String, Long> byDay = new LinkedHashMap<>();
         Map<String, Long> byStatus = new LinkedHashMap<>();
@@ -546,6 +583,34 @@ public class PanelBotTableController {
     }
 
     // ─────── helpers ───────
+
+    /**
+     * Valida que un record sea de la branch del contexto del request.
+     * Bloquea operaciones cross-branch en endpoints de detalle (GET, PUT,
+     * DELETE de records por id) que de otro modo permitirían ver/editar
+     * records de OTRAS sucursales si el caller adivina el ID.
+     *
+     * Reglas:
+     *   - Si scope=null (DIOS modo marca sin elegir): no bloquea — dejamos pasar.
+     *   - Si record.branchId=null (record legacy sin atribución): no bloquea —
+     *     son datos viejos accesibles desde cualquier branch.
+     *   - Si ambos están seteados y NO coinciden: 404 (no exponemos data ajena).
+     *
+     * @param rec el record a validar
+     * @param verb verbo de la acción para el log (ej: "actualizar", "eliminar")
+     */
+    private void requireSameBranch(BotTableRecord rec, String verb) {
+        BranchScope scope = BranchContext.current();
+        if (scope == null) return;
+        Long recBranch = rec.getBranchId();
+        if (recBranch == null) return;
+        if (!recBranch.equals(scope.getBranchId())) {
+            log.warn("[Panel] Usuario en branch={} intentó {} record id={} de branch={} — bloqueado",
+                    scope.getBranchId(), verb, rec.getId(), recBranch);
+            // 404 (no 403) para no filtrar "existe pero no podés tocarlo".
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
 
     private BotTable requirePanelEnabled(Long id) {
         BotTable t = tableRepo.findById(id)

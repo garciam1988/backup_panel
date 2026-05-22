@@ -20,6 +20,8 @@ import java.time.Instant;
 @Table(name = "bot_table_record", indexes = {
     @Index(name = "idx_record_table", columnList = "table_id"),
     @Index(name = "idx_record_created", columnList = "created_at"),
+    @Index(name = "idx_record_branch", columnList = "branch_id"),
+    @Index(name = "idx_record_table_branch", columnList = "table_id, branch_id"),
 })
 @Data
 public class BotTableRecord {
@@ -30,6 +32,19 @@ public class BotTableRecord {
 
     @Column(name = "table_id", nullable = false)
     private Long tableId;
+
+    /**
+     * Sucursal a la que pertenece este registro. NULL solo para data legacy
+     * pre-Bloque-3 — el bootstrap rellena esos casos con la branch default
+     * al arrancar la app. Para records nuevos creados después del Bloque 3,
+     * SIEMPRE se setea con el branch del BranchContext del request.
+     *
+     * El filtrado por branch lo hace BotTableService al consultar — el bot
+     * solo ve los records de la branch del contexto. Los listados del admin
+     * también respetan esto (un gerente solo ve records de sus branches).
+     */
+    @Column(name = "branch_id")
+    private Long branchId;
 
     @Column(name = "data_json", columnDefinition = "JSON", nullable = false)
     private String dataJson;

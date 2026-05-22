@@ -60,6 +60,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String subject = claims.getSubject();
             String role = claims.get("role", String.class);
 
+            // Exponemos algunos claims como request attributes para que filtros
+            // posteriores (ej. BranchResolverFilter) puedan leerlos sin volver
+            // a parsear el JWT. Claves consistentes con el formato del claim.
+            request.setAttribute("jwt.role", role);
+            request.setAttribute("jwt.uid", claims.get("uid"));
+            request.setAttribute("jwt.allBranches", claims.get("allBranches"));
+            request.setAttribute("jwt.branchIds", claims.get("branchIds"));
+            request.setAttribute("jwt.preferredBranchId", claims.get("preferredBranchId"));
+
             // Si ya hay auth en el contexto (ej: otro filtro), no la pisamos
             if (SecurityContextHolder.getContext().getAuthentication() == null && subject != null) {
                 // Subject "staff:{id}" → es un JWT emitido por StaffAppController

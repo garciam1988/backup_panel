@@ -63,12 +63,16 @@ public class ExcelCatalogService {
      *
      * @param name        nombre lógico del catálogo (ej: "productos")
      * @param description descripción opcional
+     * @param branchId    sucursal a la que pertenece (null = global a la marca).
+     *                    El upsert busca por (name, branchId) — dos sucursales
+     *                    pueden tener un "menu" cada una y conviven sin chocar.
      * @param file        archivo .xlsx (o .xls)
      * @param uploadedBy  usuario que sube
      * @return metadata del catálogo creado/actualizado
      */
     @Transactional
-    public ExcelCatalog uploadCatalog(String name, String description, MultipartFile file, String uploadedBy) throws IOException {
+    public ExcelCatalog uploadCatalog(String name, String description, Long branchId,
+                                       MultipartFile file, String uploadedBy) throws IOException {
         if (file == null || file.isEmpty()) throw new IllegalArgumentException("El archivo está vacío");
         if (name == null || name.isBlank()) throw new IllegalArgumentException("El nombre del catálogo es obligatorio");
 
@@ -96,9 +100,28 @@ public class ExcelCatalogService {
         //   3. Recién después parsear y guardar las filas nuevas.
         // ─────────────────────────────────────────────────────────────────
 
-        Optional<ExcelCatalog> existing = catalogRepo.findByName(cleanName);
+        Optional<ExcelCatalog> existing = catalogRepo.findByNameAndBranchId(cleanName, branchId);
+
+        // Validación de colisión con global:
+        // Si se está creando un catálogo NO global (branchId != null) y ya existe
+        // un GLOBAL con el mismo nombre, falla. Razón: el bot, scopeado a esa
+        // branch, vería los dos catálogos (su branch + globales) con el mismo
+        // nombre, y eso rompe la inyección al prompt y la generación de tools
+        // (ambigüedad). Solo aplica cuando es una creación nueva — en upsert
+        // (existing.isPresent) ya sabemos que estamos updateando un registro
+        // específico y no hay riesgo.
+        if (existing.isEmpty() && branchId != null) {
+            Optional<ExcelCatalog> conflictGlobal = catalogRepo.findByNameAndBranchId(cleanName, null);
+            if (conflictGlobal.isPresent()) {
+                throw new IllegalArgumentException(
+                        "Ya existe un catálogo GLOBAL con el nombre '" + cleanName + "'. " +
+                        "Elegí otro nombre o pedile a un administrador que renombre/borre el global.");
+            }
+        }
+
         ExcelCatalog catalog = existing.orElseGet(ExcelCatalog::new);
         catalog.setName(cleanName);
+        catalog.setBranchId(branchId);
         if (description != null) catalog.setDescription(description);
         catalog.setOriginalFilename(file.getOriginalFilename());
         catalog.setSizeBytes(file.getSize());
@@ -111,7 +134,8 @@ public class ExcelCatalogService {
             long oldCount = rowRepo.countByCatalogId(catalog.getId());
             rowRepo.deleteByCatalogId(catalog.getId());
             em.flush();
-            log.info("excel_catalog upsert: name={}, filas viejas borradas={}", cleanName, oldCount);
+            log.info("excel_catalog upsert: name={} branch={} filas viejas borradas={}",
+                    cleanName, branchId, oldCount);
         }
 
         // Guardar metadata del catálogo (asigna id si era nuevo) y flushear

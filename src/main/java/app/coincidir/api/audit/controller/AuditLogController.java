@@ -7,6 +7,10 @@ import app.coincidir.api.domain.PanelUser;
 import app.coincidir.api.repository.PanelUserRepository;
 import app.coincidir.api.security.PermissionsService;
 import app.coincidir.api.security.PermissionsService.EffectivePermissions;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
+import app.coincidir.api.tenancy.domain.Branch;
+import app.coincidir.api.tenancy.repository.BranchRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +51,7 @@ public class AuditLogController {
     private final AuditLogRepository repo;
     private final PanelUserRepository userRepo;
     private final PermissionsService permissionsService;
+    private final BranchRepository branchRepo;
 
     // ── Listado paginado ──────────────────────────────────────────────────
 
@@ -56,6 +61,7 @@ public class AuditLogController {
             @RequestParam(required = false) String action,
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String entityType,
+            @RequestParam(required = false) Long branchId,        // Bloque 6
             @RequestParam(required = false) String from,         // ISO datetime
             @RequestParam(required = false) String to,           // ISO datetime
             @RequestParam(required = false) String q,            // búsqueda libre
@@ -76,16 +82,37 @@ public class AuditLogController {
         // Cap defensivo del page size — evitar que alguien pida 10000 filas.
         int effectiveSize = Math.min(Math.max(size, 1), 200);
 
+        // Tenancy auto-filtro: si el caller NO mandó branchId explícito y hay
+        // branch en el contexto del request, aplicamos esa branch como filtro.
+        // Permite que un gerente vea SOLO la auditoría de su sucursal sin que
+        // el frontend tenga que enviarla, y que DIOS con sucursal elegida vea
+        // auto-filtrado. Si DIOS quiere ver "todas", el frontend manda
+        // branchId=0 (que tratamos como null para no filtrar).
+        Long effectiveBranchId = branchId;
+        if (effectiveBranchId == null) {
+            BranchScope scope = BranchContext.current();
+            if (scope != null) effectiveBranchId = scope.getBranchId();
+        } else if (effectiveBranchId == 0L) {
+            // 0 es la "señal" del frontend para forzar "todas".
+            effectiveBranchId = null;
+        }
+
         Pageable pageable = PageRequest.of(page, effectiveSize);
         Page<AuditLog> result = repo.search(moduleNorm, actionNorm, userId, entityTypeNorm,
-                                            fromIns, toIns, qNorm, pageable);
+                                            effectiveBranchId, fromIns, toIns, qNorm, pageable);
+
+        // Resolver nombres de branch en memoria — una sola query para toda la página.
+        Map<Long, String> branchNames = resolveBranchNames(result.getContent());
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("content", result.getContent().stream().map(this::toListDto).collect(Collectors.toList()));
+        out.put("content", result.getContent().stream()
+                .map(l -> toListDto(l, branchNames))
+                .collect(Collectors.toList()));
         out.put("totalElements", result.getTotalElements());
         out.put("totalPages", result.getTotalPages());
         out.put("page", result.getNumber());
         out.put("size", result.getSize());
+        out.put("appliedBranchId", effectiveBranchId);
         return out;
     }
 
@@ -96,7 +123,8 @@ public class AuditLogController {
         requireAuditPermission(principal);
         AuditLog log = repo.findById(id)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Log no encontrado"));
-        return toDetailDto(log);
+        Map<Long, String> branchNames = resolveBranchNames(List.of(log));
+        return toDetailDto(log, branchNames);
     }
 
     // ── Filtros disponibles (para poblar selects en UI) ───────────────────
@@ -147,6 +175,21 @@ public class AuditLogController {
                 },
                 (a, b) -> a))
             .values());
+
+        // Branches: TODAS las del tenant (no solo las que tengan logs), para
+        // que la UI pueda filtrar por una sucursal aunque hoy no haya entradas
+        // (caso típico: sucursal nueva que todavía no generó acciones).
+        out.put("branches", branchRepo.findAll().stream()
+            .map(b -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", b.getId());
+                m.put("name", b.getName());
+                m.put("slug", b.getSlug());
+                m.put("active", b.getActive());
+                return m;
+            })
+            .collect(Collectors.toList()));
+
         return out;
     }
 
@@ -158,6 +201,7 @@ public class AuditLogController {
             @RequestParam(required = false) String action,
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String entityType,
+            @RequestParam(required = false) Long branchId,
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
             @RequestParam(required = false) String q,
@@ -175,16 +219,29 @@ public class AuditLogController {
         // Cap defensivo: hasta 10k filas por export. Si necesitan más,
         // que filtren por rango más chico.
         Pageable pageable = PageRequest.of(0, 10_000, Sort.by(Sort.Direction.DESC, "ts"));
+
+        // Mismo auto-filtro que en list (ver comentario allá).
+        Long effectiveBranchId = branchId;
+        if (effectiveBranchId == null) {
+            BranchScope scope = BranchContext.current();
+            if (scope != null) effectiveBranchId = scope.getBranchId();
+        } else if (effectiveBranchId == 0L) {
+            effectiveBranchId = null;
+        }
+
         Page<AuditLog> result = repo.search(moduleNorm, actionNorm, userId, entityTypeNorm,
-                                            fromIns, toIns, qNorm, pageable);
+                                            effectiveBranchId, fromIns, toIns, qNorm, pageable);
+
+        Map<Long, String> branchNames = resolveBranchNames(result.getContent());
 
         StringBuilder sb = new StringBuilder();
-        sb.append("fecha,usuario,nombre,rol,modulo,accion,entidad,id_entidad,resumen,ip\n");
+        sb.append("fecha,usuario,nombre,rol,sucursal,modulo,accion,entidad,id_entidad,resumen,ip\n");
         for (AuditLog l : result.getContent()) {
             sb.append(csvField(l.getTs() != null ? l.getTs().toString() : "")).append(",");
             sb.append(csvField(l.getUsername())).append(",");
             sb.append(csvField(l.getDisplayName())).append(",");
             sb.append(csvField(l.getRole())).append(",");
+            sb.append(csvField(l.getBranchId() != null ? branchNames.getOrDefault(l.getBranchId(), "?") : "")).append(",");
             sb.append(csvField(l.getModule())).append(",");
             sb.append(csvField(l.getAction())).append(",");
             sb.append(csvField(l.getEntityType())).append(",");
@@ -250,7 +307,24 @@ public class AuditLogController {
         return needsQuote ? "\"" + esc + "\"" : esc;
     }
 
-    private AuditLogListDto toListDto(AuditLog l) {
+    /**
+     * Resuelve los nombres de las branches de los logs en una sola query.
+     * Para listados grandes evita N queries (una por log).
+     */
+    private Map<Long, String> resolveBranchNames(List<AuditLog> logs) {
+        Set<Long> ids = logs.stream()
+            .map(AuditLog::getBranchId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, String> out = new HashMap<>();
+        for (Branch b : branchRepo.findAllById(ids)) {
+            out.put(b.getId(), b.getName());
+        }
+        return out;
+    }
+
+    private AuditLogListDto toListDto(AuditLog l, Map<Long, String> branchNames) {
         AuditLogListDto d = new AuditLogListDto();
         d.id = l.getId();
         d.ts = l.getTs();
@@ -265,13 +339,15 @@ public class AuditLogController {
         d.module = l.getModule();
         d.summary = l.getSummary();
         d.source = l.getSource();
+        d.branchId = l.getBranchId();
+        d.branchName = l.getBranchId() != null ? branchNames.get(l.getBranchId()) : null;
         // changesJson NO se incluye en el listado para no inflar el payload.
         d.hasChanges = l.getChangesJson() != null && !l.getChangesJson().isBlank()
                        && !"{}".equals(l.getChangesJson());
         return d;
     }
 
-    private AuditLogDetailDto toDetailDto(AuditLog l) {
+    private AuditLogDetailDto toDetailDto(AuditLog l, Map<Long, String> branchNames) {
         AuditLogDetailDto d = new AuditLogDetailDto();
         d.id = l.getId();
         d.ts = l.getTs();
@@ -286,6 +362,8 @@ public class AuditLogController {
         d.module = l.getModule();
         d.summary = l.getSummary();
         d.source = l.getSource();
+        d.branchId = l.getBranchId();
+        d.branchName = l.getBranchId() != null ? branchNames.get(l.getBranchId()) : null;
         d.ipAddress = l.getIpAddress();
         d.userAgent = l.getUserAgent();
         d.changesJson = l.getChangesJson();
@@ -309,6 +387,8 @@ public class AuditLogController {
         public String module;
         public String summary;
         public String source;
+        public Long branchId;
+        public String branchName;
         public Boolean hasChanges;
     }
 

@@ -15,7 +15,8 @@ import java.time.Instant;
 @Table(name = "conversation_log", indexes = {
         @Index(name = "idx_conv_started_at", columnList = "started_at"),
         @Index(name = "idx_conv_brand_name", columnList = "brand_name"),
-        @Index(name = "idx_conv_client_names", columnList = "client_first_name,client_last_name")
+        @Index(name = "idx_conv_client_names", columnList = "client_first_name,client_last_name"),
+        @Index(name = "idx_conv_branch", columnList = "branch_id")
 })
 @Getter @Setter
 public class ConversationLog {
@@ -27,6 +28,23 @@ public class ConversationLog {
     /** ID del singleton bot_config en el momento de la charla (por si en el futuro hay multi-bot). */
     @Column(name = "bot_config_id")
     private Long botConfigId;
+
+    /**
+     * Sucursal asociada a la conversación. NULL para conversaciones legacy
+     * (anteriores a multi-tenancy) y para conversaciones donde el cliente
+     * nunca eligió sucursal (caso anónimo). El bot público lo setea cuando
+     * el cliente identifica una sucursal vía la tool `identificar_sucursal`,
+     * o cuando viene resuelto del BranchContext del request.
+     *
+     * Para el listado del admin:
+     *   - DIOS sin branch en contexto → ve todas.
+     *   - DIOS/Gerente con branch en contexto → ve solo las de esa branch.
+     *     Las legacy (branch_id NULL) NO aparecen al filtrar por una branch
+     *     específica — son "data de antes" y no le pertenecen a nadie en
+     *     particular.
+     */
+    @Column(name = "branch_id")
+    private Long branchId;
 
     // ── Snapshot de config al momento del cierre ───────────────────────────
     /** brandName vigente al cerrar la charla (snapshot — el admin puede haberlo cambiado después). */

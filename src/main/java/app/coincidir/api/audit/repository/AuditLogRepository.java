@@ -52,6 +52,7 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
           AND (:action     IS NULL OR a.action     = :action)
           AND (:userId     IS NULL OR a.userId     = :userId)
           AND (:entityType IS NULL OR a.entityType = :entityType)
+          AND (:branchId   IS NULL OR a.branchId   = :branchId)
           AND (:from       IS NULL OR a.ts >= :from)
           AND (:to         IS NULL OR a.ts <= :to)
           AND (:q IS NULL OR
@@ -65,11 +66,20 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
         @Param("action")     String action,
         @Param("userId")     Long userId,
         @Param("entityType") String entityType,
+        @Param("branchId")   Long branchId,
         @Param("from")       Instant from,
         @Param("to")         Instant to,
         @Param("q")          String q,
         Pageable pageable
     );
+
+    // Backfill: logs sin branch (pre-Bloque-6) → asignar branch default
+    long countByBranchIdIsNull();
+
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("UPDATE AuditLog a SET a.branchId = :branchId WHERE a.branchId IS NULL")
+    int assignDefaultBranchToLegacy(@Param("branchId") Long branchId);
 
     /** Borra logs anteriores a una fecha — usado por el job de retención. */
     @org.springframework.transaction.annotation.Transactional

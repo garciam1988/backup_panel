@@ -67,12 +67,17 @@ public class DataSourceRefreshJob {
                 String mime = DataSourceIngestService.normalizeMime(dl.mimeType, dl.filename);
 
                 if (DataSourceIngestService.isTabular(mime)) {
-                    // Delegamos a ExcelCatalogService — re-parsea las filas
+                    // Delegamos a ExcelCatalogService — re-parsea las filas.
+                    // Preservamos el branchId original del catálogo así el refresh
+                    // no muta a qué sucursal pertenece (sería un bug grave).
                     MultipartFile mf = new ByteArrayMultipartFile(
                             "file", dl.filename, mime, dl.content);
-                    catalogService.uploadCatalog(cat.getName(), cat.getDescription(), mf, "refresh-job");
-                    // Releer y re-setear metadata URL
-                    ExcelCatalog updated = catalogRepo.findByName(cat.getName()).orElse(cat);
+                    catalogService.uploadCatalog(cat.getName(), cat.getDescription(),
+                            cat.getBranchId(), mf, "refresh-job");
+                    // Releer y re-setear metadata URL. Buscamos por (name, branchId)
+                    // porque tras Bloque 1 dos sucursales pueden tener el mismo name.
+                    ExcelCatalog updated = catalogRepo.findByNameAndBranchId(
+                            cat.getName(), cat.getBranchId()).orElse(cat);
                     updated.setSourceType("url");
                     updated.setOriginalUrl(cat.getOriginalUrl());
                     updated.setAutoRefreshHours(hours);

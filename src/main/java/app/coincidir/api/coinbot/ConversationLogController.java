@@ -2,6 +2,8 @@ package app.coincidir.api.coinbot;
 
 import app.coincidir.api.domain.ConversationLog;
 import app.coincidir.api.repository.ConversationLogRepository;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -62,9 +64,23 @@ public class ConversationLogController {
         e.setStartedAt(body.startedAt != null ? body.startedAt : Instant.now());
         e.setEndedAt(body.endedAt != null ? body.endedAt : Instant.now());
 
+        // Tenancy: la sucursal viene PRIORITARIAMENTE del BranchContext del
+        // request (header X-Branch-Id, manejado por BranchResolverFilter).
+        // Como FALLBACK, leemos del payload (caso sendBeacon/keepalive que
+        // no pueden mandar headers custom). Si ninguno tiene valor, queda
+        // null (conversación "anónima de sucursal") y queda fuera de los
+        // listados filtrados por sucursal.
+        BranchScope scope = BranchContext.current();
+        if (scope != null) {
+            e.setBranchId(scope.getBranchId());
+        } else if (body.branchId != null) {
+            e.setBranchId(body.branchId);
+        }
+
         ConversationLog saved = repo.save(e);
-        log.info("conversation_log saved id={} brand={} anon={} msgs={}",
-                saved.getId(), saved.getBrandName(), saved.getIsAnonymous(), saved.getMessageCount());
+        log.info("conversation_log saved id={} brand={} branch={} anon={} msgs={}",
+                saved.getId(), saved.getBrandName(), saved.getBranchId(),
+                saved.getIsAnonymous(), saved.getMessageCount());
 
         Map<String, Object> out = new HashMap<>();
         out.put("id", saved.getId());
@@ -83,10 +99,19 @@ public class ConversationLogController {
                                     @RequestParam(defaultValue = "0") int page,
                                     @RequestParam(defaultValue = "50") int size) {
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 200));
+
+        // Tenancy auto-filtro: si el request tiene branch en contexto (DIOS
+        // eligió sucursal, o user no-DIOS que viene scopeado por su preferida),
+        // filtramos por esa branch. Si no hay branch (DIOS no eligió → modo
+        // marca), pasamos null y vemos todas las conversaciones.
+        BranchScope scope = BranchContext.current();
+        Long branchFilter = (scope != null) ? scope.getBranchId() : null;
+
         Page<ConversationLog> p = repo.search(
                 nullIfBlank(brand),
                 nullIfBlank(clientName),
                 nullIfBlank(freeText),
+                branchFilter,
                 pageable);
 
         Map<String, Object> out = new HashMap<>();
@@ -95,6 +120,8 @@ public class ConversationLogController {
         out.put("size", p.getSize());
         out.put("totalElements", p.getTotalElements());
         out.put("totalPages", p.getTotalPages());
+        // Útil para que el frontend muestre un cartel "Mostrando: [Sucursal]" o "Todas".
+        out.put("appliedBranchId", branchFilter);
         return out;
     }
 
@@ -115,6 +142,20 @@ public class ConversationLogController {
     public ConversationLogDto detail(@org.springframework.web.bind.annotation.PathVariable Long id) {
         ConversationLog e = repo.findById(id).orElseThrow(() ->
                 new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
+
+        // Tenancy: si hay branch en el contexto y la conversación pertenece a
+        // OTRA branch, devolvemos 404 — no exponemos data cross-branch ni con
+        // ID hardcodeado. Si la conversación tiene branchId=NULL (legacy) o
+        // si no hay branch en contexto (DIOS sin elegir, modo marca),
+        // dejamos pasar.
+        BranchScope scope = BranchContext.current();
+        if (scope != null && e.getBranchId() != null
+                && !scope.getBranchId().equals(e.getBranchId())) {
+            log.warn("[ConvLog] User en branch={} intentó leer conv id={} de branch={} — bloqueado",
+                    scope.getBranchId(), id, e.getBranchId());
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND);
+        }
         return ConversationLogDto.fullFromEntity(e);
     }
 
@@ -154,6 +195,13 @@ public class ConversationLogController {
         public String deviceOs;
         public String deviceBrowser;
         public String userAgent;
+        /**
+         * Sucursal de la conversación. Fallback: si el frontend pudo mandar
+         * X-Branch-Id en el header, ese gana via BranchContext. Pero si no
+         * (caso típico: cierre por sendBeacon que no permite headers
+         * custom), el cliente lo manda en el payload.
+         */
+        public Long branchId;
         public String messagesJson;
         public Integer messageCount;
         public String closedReason;

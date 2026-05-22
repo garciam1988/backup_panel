@@ -8,6 +8,8 @@ import app.coincidir.api.repository.PanelUserRepository;
 import app.coincidir.api.security.JwtService;
 import app.coincidir.api.security.PermissionsService;
 import app.coincidir.api.security.PermissionsService.EffectivePermissions;
+import app.coincidir.api.tenancy.domain.UserBranchAccess;
+import app.coincidir.api.tenancy.repository.UserBranchAccessRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -17,7 +19,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.security.Principal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -44,6 +48,7 @@ public class AuthController {
     private final PanelUserRepository panelUserRepo;
     private final JwtService jwt;
     private final PermissionsService permissionsService;
+    private final UserBranchAccessRepository userBranchAccessRepo;
 
     @PostMapping("/login")
     public LoginResponse login(@RequestBody LoginRequest req) {
@@ -76,14 +81,53 @@ public class AuthController {
         pu.setLastLoginAt(Instant.now());
         panelUserRepo.save(pu);
 
-        String token = jwt.generate(
-                pu.getUsername(),
-                Map.of(
-                        "uid", pu.getId(),
-                        "role", pu.getRole() == null ? "" : pu.getRole(),
-                        "userKind", "PANEL_USER"
-                )
-        );
+        // ── Tenancy: resolver branches accesibles ─────────────────────────
+        //
+        // Reglas:
+        //   - DIOS no necesita filas en user_branch_access; tiene acceso
+        //     universal. El JWT le mete branchIds=[] y allBranches=true.
+        //     El frontend del admin le muestra selector con TODAS las branches.
+        //
+        //   - Cualquier otro rol DEBE tener al menos una fila apuntando a
+        //     una branch activa. Si tiene 0 → 403 (su admin tiene que asignarle
+        //     branches antes).
+        //
+        //   - Si tiene varias, mandamos todas + la preferida (si la marcó).
+        //     El frontend rutea automáticamente a la preferida si existe,
+        //     o a la primera si no.
+        boolean isDios = "DIOS".equalsIgnoreCase(pu.getRole());
+        List<Long> branchIds = new ArrayList<>();
+        Long preferredBranchId = null;
+
+        if (!isDios) {
+            List<UserBranchAccess> accesses = userBranchAccessRepo.findByUserId(pu.getId());
+            if (accesses.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Tu usuario no tiene sucursales asignadas. Pedile al administrador que te asigne al menos una.");
+            }
+            for (UserBranchAccess a : accesses) {
+                branchIds.add(a.getBranchId());
+                if (Boolean.TRUE.equals(a.getIsPreferred())) {
+                    preferredBranchId = a.getBranchId();
+                }
+            }
+            // Si nadie marcó preferida, usamos la primera (más estable que random).
+            if (preferredBranchId == null && !branchIds.isEmpty()) {
+                preferredBranchId = branchIds.get(0);
+            }
+        }
+
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("uid", pu.getId());
+        claims.put("role", pu.getRole() == null ? "" : pu.getRole());
+        claims.put("userKind", "PANEL_USER");
+        claims.put("allBranches", isDios);
+        claims.put("branchIds", branchIds);
+        if (preferredBranchId != null) {
+            claims.put("preferredBranchId", preferredBranchId);
+        }
+
+        String token = jwt.generate(pu.getUsername(), claims);
         return new LoginResponse(token);
     }
 

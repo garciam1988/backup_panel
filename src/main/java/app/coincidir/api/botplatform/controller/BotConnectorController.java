@@ -4,18 +4,22 @@ import app.coincidir.api.botplatform.domain.BotConnector;
 import app.coincidir.api.botplatform.domain.BotConnector.DbType;
 import app.coincidir.api.botplatform.repository.BotConnectorRepository;
 import app.coincidir.api.botplatform.service.DynamicDataSourceService;
+import app.coincidir.api.tenancy.access.BranchAccessGuard;
+import app.coincidir.api.tenancy.context.BranchContext;
+import app.coincidir.api.tenancy.context.BranchContext.BranchScope;
+import app.coincidir.api.tenancy.domain.Branch;
+import app.coincidir.api.tenancy.repository.BranchRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * BotConnectorController — CRUD de conectores a BDs externas.
@@ -39,21 +43,47 @@ public class BotConnectorController {
     private final BotConnectorRepository repo;
     private final DynamicDataSourceService dataSourceService;
     private final app.coincidir.api.botplatform.service.SchemaIntrospectionService schemaService;
+    private final BranchAccessGuard branchAccess;
+    private final BranchRepository branchRepo;
 
     @GetMapping
     @Transactional(readOnly = true)
-    public List<BotConnectorDto> list(@RequestParam(value = "all", defaultValue = "false") boolean all) {
-        List<BotConnector> list = all
-                ? repo.findAllByOrderByNameAsc()
-                : repo.findByActiveTrueOrderByNameAsc();
-        return list.stream().map(BotConnectorDto::fromEntity).toList();
+    public List<BotConnectorDto> list(@RequestParam(value = "all", defaultValue = "false") boolean all,
+                                       Authentication auth) {
+        String username = auth != null ? auth.getName() : null;
+        List<Long> readableBranchIds = branchAccess.readableBranchIdsOrNullForUnrestricted(username);
+
+        List<BotConnector> list;
+        if (readableBranchIds == null) {
+            // DIOS/ADMIN
+            list = all
+                    ? repo.findAllByOrderByNameAsc()
+                    : repo.findByActiveTrueOrderByNameAsc();
+        } else if (readableBranchIds.isEmpty()) {
+            // User sin branches asignadas — solo globales
+            list = all
+                    ? repo.findGlobalsOrderByNameAsc()
+                    : repo.findActiveGlobalsOrderByNameAsc();
+        } else {
+            list = all
+                    ? repo.findVisibleForBranchesOrderByNameAsc(readableBranchIds)
+                    : repo.findActiveVisibleForBranchesOrderByNameAsc(readableBranchIds);
+        }
+
+        Map<Long, String> branchNames = loadBranchNames(list);
+        return list.stream().map(c -> BotConnectorDto.fromEntity(c, false, branchNames)).toList();
     }
 
     @GetMapping("/{id}")
     @Transactional(readOnly = true)
-    public ResponseEntity<BotConnectorDto> getOne(@PathVariable Long id) {
+    public ResponseEntity<BotConnectorDto> getOne(@PathVariable Long id, Authentication auth) {
+        String username = auth != null ? auth.getName() : null;
         return repo.findById(id)
-                .map(BotConnectorDto::fromEntity)
+                .map(c -> {
+                    branchAccess.requireRead(username, c.getBranchId());
+                    Map<Long, String> bn = loadBranchNames(List.of(c));
+                    return BotConnectorDto.fromEntity(c, false, bn);
+                })
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -65,31 +95,61 @@ public class BotConnectorController {
 
     @PostMapping
     @Transactional
-    public ResponseEntity<?> create(@RequestBody BotConnectorDto dto) {
+    public ResponseEntity<?> create(@RequestBody BotConnectorDto dto, Authentication auth) {
         String err = dto.validate();
         if (err != null) return ResponseEntity.badRequest().body(Map.of("error", err));
-        if (repo.findByName(dto.name.trim()).isPresent()) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", "Ya existe un conector con ese nombre"));
+
+        String username = auth != null ? auth.getName() : null;
+        BranchScope scope = BranchContext.current();
+        Long scopeBranchId = (scope != null) ? scope.getBranchId() : null;
+        Long finalBranchId = branchAccess.resolveBranchForCreate(username, dto.branchId, scopeBranchId);
+        branchAccess.requireWrite(username, finalBranchId);
+
+        // Lookup por (name, branchId) — la constraint unique es compuesta tras Bloque 1.
+        // PERO: si el caller crea uno NO-global (branchId != null) y ya existe un
+        // GLOBAL con el mismo nombre, también es conflicto: el bot vería dos
+        // connectors con el mismo nombre cuando esté scopeado a esa branch
+        // (porque ve los de su branch + los globales), y eso rompe la generación
+        // de tools (nombres duplicados). Bloqueamos ese caso explícitamente.
+        if (repo.findByNameAndBranchId(dto.name.trim(), finalBranchId).isPresent()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                    "error", finalBranchId == null
+                            ? "Ya existe un conector global con ese nombre"
+                            : "Ya existe un conector con ese nombre en esta sucursal"));
+        }
+        if (finalBranchId != null && repo.findByNameAndBranchId(dto.name.trim(), null).isPresent()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                    "error", "Ya existe un conector GLOBAL con ese nombre. Elegí otro nombre o pedile a un administrador que renombre/borre el global."));
         }
         BotConnector e = new BotConnector();
         dto.applyTo(e);
+        e.setBranchId(finalBranchId);
         BotConnector saved = repo.save(e);
-        log.info("bot_connector creado: id={}, name='{}', type={}", saved.getId(), saved.getName(), saved.getDbType());
-        return ResponseEntity.status(HttpStatus.CREATED).body(BotConnectorDto.fromEntity(saved));
+        log.info("bot_connector creado: id={}, name='{}', type={}, branch={}",
+                saved.getId(), saved.getName(), saved.getDbType(), saved.getBranchId());
+        Map<Long, String> bn = loadBranchNames(List.of(saved));
+        return ResponseEntity.status(HttpStatus.CREATED).body(BotConnectorDto.fromEntity(saved, false, bn));
     }
 
     @PutMapping("/{id}")
     @Transactional
-    public ResponseEntity<?> update(@PathVariable Long id, @RequestBody BotConnectorDto dto) {
+    public ResponseEntity<?> update(@PathVariable Long id, @RequestBody BotConnectorDto dto, Authentication auth) {
         Optional<BotConnector> opt = repo.findById(id);
         if (opt.isEmpty()) return ResponseEntity.notFound().build();
         String err = dto.validate();
         if (err != null) return ResponseEntity.badRequest().body(Map.of("error", err));
         BotConnector e = opt.get();
+
+        String username = auth != null ? auth.getName() : null;
+        branchAccess.requireWrite(username, e.getBranchId());
+
         // Capturamos el glossary previo ANTES del applyTo para detectar
         // si cambió y, en ese caso, re-generar el llmSummary cacheado.
         String oldGlossary = e.getBusinessGlossary();
         dto.applyTo(e);
+        // Nota: branchId NO se actualiza desde update — los connectors quedan
+        // en su sucursal de creación. Mover entre branches sería un endpoint
+        // dedicado (no implementado en Bloque 2).
         BotConnector saved = repo.save(e);
         // Invalidar el pool cacheado — las credenciales pueden haber cambiado
         dataSourceService.invalidate(id);
@@ -104,13 +164,18 @@ public class BotConnectorController {
             }
         }
         log.info("bot_connector actualizado: id={}", id);
-        return ResponseEntity.ok(BotConnectorDto.fromEntity(saved));
+        Map<Long, String> bn = loadBranchNames(List.of(saved));
+        return ResponseEntity.ok(BotConnectorDto.fromEntity(saved, false, bn));
     }
 
     @DeleteMapping("/{id}")
     @Transactional
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
-        if (!repo.existsById(id)) return ResponseEntity.notFound().build();
+    public ResponseEntity<Void> delete(@PathVariable Long id, Authentication auth) {
+        Optional<BotConnector> opt = repo.findById(id);
+        if (opt.isEmpty()) return ResponseEntity.notFound().build();
+        String username = auth != null ? auth.getName() : null;
+        branchAccess.requireWrite(username, opt.get().getBranchId());
+
         repo.deleteById(id);
         dataSourceService.invalidate(id);
         log.info("bot_connector eliminado: id={}", id);
@@ -120,8 +185,11 @@ public class BotConnectorController {
     /** Probar una conexión ya guardada. */
     @PostMapping("/{id}/test")
     @Transactional(readOnly = true)
-    public ResponseEntity<Map<String, Object>> testExisting(@PathVariable Long id) {
+    public ResponseEntity<Map<String, Object>> testExisting(@PathVariable Long id, Authentication auth) {
+        String username = auth != null ? auth.getName() : null;
         return repo.findById(id).<ResponseEntity<Map<String, Object>>>map(conn -> {
+            // Test es read-only pero implica intentar conectarse — pedimos read.
+            branchAccess.requireRead(username, conn.getBranchId());
             String err = dataSourceService.testConnection(conn);
             Map<String, Object> body = new java.util.LinkedHashMap<>();
             if (err == null) {
@@ -184,6 +252,23 @@ public class BotConnectorController {
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    private Map<Long, String> loadBranchNames(Collection<BotConnector> connectors) {
+        Set<Long> branchIds = new HashSet<>();
+        for (BotConnector c : connectors) {
+            if (c.getBranchId() != null) branchIds.add(c.getBranchId());
+        }
+        if (branchIds.isEmpty()) return Map.of();
+        Map<Long, String> out = new HashMap<>();
+        for (Branch b : branchRepo.findAllById(branchIds)) {
+            out.put(b.getId(), b.getName());
+        }
+        return out;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // DTO
     // ─────────────────────────────────────────────────────────────────────
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -191,6 +276,9 @@ public class BotConnectorController {
         public Long     id;
         public String   name;
         public String   description;
+        /** Sucursal a la que pertenece. Null = global. */
+        public Long     branchId;
+        public String   branchName;
         public String   dbType;       // enum como string
         public String   host;
         public Integer  port;
@@ -218,15 +306,22 @@ public class BotConnectorController {
         public Instant  updatedAt;
 
         public static BotConnectorDto fromEntity(BotConnector e) {
-            return fromEntity(e, false);
+            return fromEntity(e, false, Map.of());
         }
 
         /** Si includePassword=false, el password se oculta (útil para listados). */
         public static BotConnectorDto fromEntity(BotConnector e, boolean includePassword) {
+            return fromEntity(e, includePassword, Map.of());
+        }
+
+        public static BotConnectorDto fromEntity(BotConnector e, boolean includePassword,
+                                                  Map<Long, String> branchNames) {
             BotConnectorDto d = new BotConnectorDto();
             d.id            = e.getId();
             d.name          = e.getName();
             d.description   = e.getDescription();
+            d.branchId      = e.getBranchId();
+            d.branchName    = e.getBranchId() != null ? branchNames.get(e.getBranchId()) : null;
             d.dbType        = e.getDbType() != null ? e.getDbType().name() : null;
             d.host          = e.getHost();
             d.port          = e.getPort();

@@ -18,7 +18,13 @@ import java.time.Instant;
  *   3. El bot (Fase Excel-3) consultará via tools del ecosistema BotTool
  */
 @Entity
-@Table(name = "excel_catalog")
+@Table(name = "excel_catalog", uniqueConstraints = {
+        // Antes era unique(name) global. Ahora el nombre es único POR sucursal:
+        // dos sucursales pueden tener un catálogo llamado "menu" cada una, y
+        // además puede existir un "menu" global con branch_id=NULL (NULLs no
+        // colisionan en UNIQUE en MySQL, así que sigue funcionando).
+        @UniqueConstraint(name = "uq_excel_catalog_name_branch", columnNames = {"name", "branch_id"})
+})
 @Getter @Setter
 public class ExcelCatalog {
 
@@ -30,12 +36,35 @@ public class ExcelCatalog {
      * Nombre lógico / identificador del catálogo. Es con lo que el admin y el
      * bot van a referirse al catálogo. Ej: "productos", "precios_mayorista".
      * Sugerencia: snake_case, sin acentos.
+     *
+     * Único por sucursal (ver uniqueConstraint a nivel @Table). El mismo nombre
+     * puede repetirse entre branches distintas para soportar el caso "cada
+     * sucursal tiene su catálogo `menu`".
      */
-    @Column(name = "name", nullable = false, length = 100, unique = true)
+    @Column(name = "name", nullable = false, length = 100)
     private String name;
 
     @Column(name = "description", length = 300)
     private String description;
+
+    /**
+     * Sucursal a la que pertenece este catálogo.
+     *
+     *   - Valor != null: catálogo "de esa sucursal". Solo lo ve y lo edita
+     *     quien tenga acceso a esa branch (o DIOS). El bot solo lo inyecta
+     *     al prompt y al menú digital cuando la conversación está scopeada
+     *     a esa branch.
+     *
+     *   - Valor null: catálogo "global a la marca". Visible para TODAS las
+     *     sucursales (gerentes y bot, sin importar la branch activa). Es el
+     *     escape hatch para fuentes comunes — políticas, FAQ, info de
+     *     contacto, etc — que no tiene sentido duplicar 11 veces.
+     *
+     * Por ahora se guarda solo el id, sin relación JPA explícita, para evitar
+     * cargar Branch en cada query y mantener el modelo de tenancy desacoplado.
+     */
+    @Column(name = "branch_id")
+    private Long branchId;
 
     /** Nombre del archivo original subido (ej: "Catalogo Productos 2026.xlsx"). */
     @Column(name = "original_filename", length = 300)
