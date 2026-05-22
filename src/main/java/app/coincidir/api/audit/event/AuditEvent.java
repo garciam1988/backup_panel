@@ -77,4 +77,11 @@ public class AuditEvent {
 
     /** User-Agent del request. */
     private String capturedUserAgent;
+
+    /**
+     * Sucursal activa del request en el momento de publicar el evento.
+     * Capturada del BranchContext.current() porque el listener corre async y
+     * ahí el ThreadLocal del filter ya no existe.
+     */
+    private Long capturedBranchId;
 }
