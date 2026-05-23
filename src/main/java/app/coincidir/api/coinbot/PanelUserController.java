@@ -192,6 +192,17 @@ public class PanelUserController {
         }
         Map<String, Object> oldSnap = snapshotForAudit(u);
         String username = u.getUsername();
+
+        // Borramos PRIMERO los accesos a sucursales. Si no, quedan filas
+        // huérfanas en `user_branch_access` apuntando a un `user_id` que ya
+        // no existe — y eso después rompe el flujo de "borrar sucursal" del
+        // panel de tenancy: el check de `findByBranchId` cuenta esas filas
+        // huérfanas como "usuarios asignados" e impide borrar la branch
+        // diciendo "tiene N usuario(s) asignado(s)" cuando en realidad no
+        // hay ninguno vivo. Bug observado al intentar borrar Colegiales
+        // después de haber borrado al único user asignado.
+        userBranchAccessRepo.deleteByUserId(id);
+
         repo.delete(u);
 
         try {

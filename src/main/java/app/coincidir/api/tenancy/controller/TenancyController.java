@@ -242,10 +242,23 @@ public class TenancyController {
         }
 
         // No se puede borrar si tiene usuarios asignados.
-        List<?> usersAssigned = userBranchAccessRepo.findByBranchId(id);
-        if (!usersAssigned.isEmpty()) {
+        //
+        // Antes contábamos con `findByBranchId(id).size()`, pero esa query
+        // incluye filas HUÉRFANAS de `user_branch_access` — accesos cuyo
+        // `user_id` ya no existe en `panel_user`. Esas filas quedaban cuando
+        // se borraba un user sin limpiar sus accesos asociados (bug del
+        // controller de delete de usuarios, ya arreglado).
+        //
+        // `countLiveUsersByBranchId` cuenta solo accesos vivos. Y antes de
+        // contar, hacemos `deleteOrphans()` para barrer cualquier huérfana
+        // que haya quedado de borrados anteriores al fix — así el admin no
+        // queda atascado intentando borrar una sucursal "que no tiene
+        // usuarios" según la UI pero sí según la BD vieja.
+        userBranchAccessRepo.deleteOrphans();
+        long usersAssigned = userBranchAccessRepo.countLiveUsersByBranchId(id);
+        if (usersAssigned > 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "La sucursal tiene " + usersAssigned.size() + " usuario(s) asignado(s). " +
+                    "La sucursal tiene " + usersAssigned + " usuario(s) asignado(s). " +
                     "Reasigná esos usuarios a otra sucursal antes de borrar.");
         }
 
