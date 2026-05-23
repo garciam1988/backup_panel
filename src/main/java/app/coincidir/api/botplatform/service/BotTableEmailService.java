@@ -456,29 +456,51 @@ public class BotTableEmailService {
 
         java.util.List<String> rows = new java.util.ArrayList<>();
 
-        // 1) Ocasión especial — usar diccionario para mostrar emoji + label legible
+        // 1) Ocasión especial — usar diccionario para mostrar emoji + label legible.
+        //    Va como fila aparte porque NO es info dietaria/operativa — es para
+        //    que el restaurant prepare algo especial (decoración, torta, etc).
         String ocasion = readText(data, "ocasion_especial");
         if (ocasion != null && !ocasion.isBlank()) {
             String label = ocasionLabels.getOrDefault(ocasion.toLowerCase().trim(), "✨ " + ocasion);
             rows.add(row("Ocasión", label));
         }
 
-        // 2) Booleanos legacy (vegetariano, diabético, celíaco) — solo si están en true.
-        //    Si están en false los omitimos (no aporta info útil al cliente decir
-        //    "diabético: No"). Si no existen como columnas, también omitir.
-        if (isTrue(data, "vegetariano")) rows.add(row("🥗 Vegetariano", "Sí"));
-        if (isTrue(data, "diabetico"))   rows.add(row("🩺 Diabético", "Sí"));
-        if (isTrue(data, "celiaco"))     rows.add(row("🌾 Celíaco", "Sí"));
+        // 2) Notas unificadas — combina restricciones dietarias (booleanos
+        //    legacy: vegetariano, diabetico, celiaco) con el texto libre de
+        //    `observaciones`. La idea es que el restaurant tenga TODA la info
+        //    operativa relevante en un solo lugar para no perderla cuando
+        //    está apurado preparando la mesa.
+        //
+        //    Antes cada restricción era una fila propia (🥗 Vegetariano: Sí,
+        //    🩺 Diabético: Sí, etc.) lo que generaba ruido visual y hacía
+        //    fácil que el operador se saltee la fila de observaciones. Ahora
+        //    todo va junto, prefijado con su emoji para que escanee rápido.
+        //
+        //    NOTA: si el bot ya escribió la restricción en `observaciones`
+        //    (texto libre) Y además marcó el booleano en true, va a aparecer
+        //    duplicada. Aceptamos eso a propósito — prefiero un poco de
+        //    redundancia que perder un celíaco por un keyword-matching
+        //    frágil.
+        java.util.List<String> notaParts = new java.util.ArrayList<>();
+        if (isTrue(data, "vegetariano")) notaParts.add("🥗 Vegetariano");
+        if (isTrue(data, "diabetico"))   notaParts.add("🩺 Diabético");
+        if (isTrue(data, "celiaco"))     notaParts.add("🌾 Celíaco");
 
-        // 3) Observaciones libres — el texto descriptivo que el bot completó
-        //    con todo lo que el cliente mencionó (ocasión + restricciones +
-        //    preferencias). Va en una fila aparte porque puede ser texto largo.
         String obs = readText(data, "observaciones");
         if (obs != null && !obs.isBlank()) {
-            String safeObs = obs.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+            notaParts.add(obs.trim());
+        }
+
+        if (!notaParts.isEmpty()) {
+            // Separamos restricciones con " · " y el texto libre con un salto
+            // visual. Construimos así:
+            //   "🥗 Vegetariano · 🌾 Celíaco · 1 persona celíaca en el grupo..."
+            // En HTML respetamos saltos de línea del texto libre con <br>.
+            String combined = String.join(" · ", notaParts);
+            String safe = combined.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>");
             rows.add(
                 "<tr><td style=\"padding:6px 0;color:#666;width:42%;vertical-align:top;\">📝 Notas</td>" +
-                "<td style=\"padding:6px 0;font-weight:600;line-height:1.5;\">" + safeObs + "</td></tr>"
+                "<td style=\"padding:6px 0;font-weight:600;line-height:1.5;\">" + safe + "</td></tr>"
             );
         }
 
