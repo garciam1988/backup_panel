@@ -7,6 +7,10 @@ import app.coincidir.api.repository.AppRoleRepository;
 import app.coincidir.api.repository.PanelUserRepository;
 import app.coincidir.api.security.PermissionsService;
 import app.coincidir.api.security.PermissionsService.EffectivePermissions;
+import app.coincidir.api.tenancy.domain.Branch;
+import app.coincidir.api.tenancy.domain.UserBranchAccess;
+import app.coincidir.api.tenancy.repository.BranchRepository;
+import app.coincidir.api.tenancy.repository.UserBranchAccessRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -17,6 +21,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +53,8 @@ public class PanelUserController {
     private final AppRoleRepository roleRepo;
     private final PermissionsService permissionsService;
     private final AuditService auditService;
+    private final UserBranchAccessRepository userBranchAccessRepo;
+    private final BranchRepository branchRepo;
 
     @GetMapping
     @Transactional(readOnly = true)
@@ -280,6 +288,57 @@ public class PanelUserController {
                 d.roleName = r.getName();
             });
         }
+        // ── Sucursales asignadas ────────────────────────────────────────
+        // Para roles cross-branch (DIOS y cualquier rol con fullAccess=true,
+        // típicamente un "Administrador" custom) no tiene sentido listar
+        // sucursales — esos usuarios ven todas las marcas. Si por alguna
+        // razón quedaron filas de user_branch_access de cuando ese user no
+        // era cross-branch, las ignoramos.
+        //
+        // Usamos PermissionsService.resolve para no replicar la lógica de
+        // parseo del permissions_json (que parsea el flag fullAccess desde
+        // un JSON embebido en el rol).
+        //
+        // Para usuarios branch-scoped (Gerente, Encargado, Caja, etc.),
+        // listamos las branches a las que tienen acceso, marcando la
+        // preferida primero (para que el frontend pueda renderear
+        // "📍 Preferida (+N más)" sin tener que ordenar).
+        //
+        // Performance: este endpoint se llama una sola vez al abrir el tab
+        // de Usuarios y la lista típica son 20-50 users. Las queries por
+        // userId van por índice. Si crece a centenares, conviene migrar a
+        // un solo query con JOIN, pero por ahora N+1 es aceptable.
+        d.branches = new ArrayList<>();
+        EffectivePermissions perms = permissionsService.resolve(u);
+        boolean isCrossBranch = (perms != null && perms.fullAccess())
+                             || Boolean.TRUE.equals(u.getIsSystem());
+        if (!isCrossBranch) {
+            List<UserBranchAccess> accesses = userBranchAccessRepo.findByUserId(u.getId());
+            if (!accesses.isEmpty()) {
+                // Cargamos las branches en un solo query
+                List<Long> branchIds = accesses.stream().map(UserBranchAccess::getBranchId).toList();
+                Map<Long, Branch> branchById = new LinkedHashMap<>();
+                branchRepo.findAllById(branchIds).forEach(b -> branchById.put(b.getId(), b));
+
+                // Ordenamos: preferida primero, después por nombre
+                accesses.stream()
+                    .sorted(Comparator
+                        .comparing((UserBranchAccess a) -> !Boolean.TRUE.equals(a.getIsPreferred()))
+                        .thenComparing(a -> {
+                            Branch b = branchById.get(a.getBranchId());
+                            return b != null && b.getName() != null ? b.getName() : "";
+                        }))
+                    .forEach(a -> {
+                        Branch b = branchById.get(a.getBranchId());
+                        if (b == null) return; // branch huérfana — la branch fue borrada y user_branch_access quedó vivo
+                        UserBranchDto bd = new UserBranchDto();
+                        bd.id = b.getId();
+                        bd.name = b.getName();
+                        bd.isPreferred = Boolean.TRUE.equals(a.getIsPreferred());
+                        d.branches.add(bd);
+                    });
+            }
+        }
         return d;
     }
 
@@ -311,5 +370,25 @@ public class PanelUserController {
         public Instant lastLoginAt;
         public Instant createdAt;
         public String  createdBy;
+        /**
+         * Sucursales a las que el usuario tiene acceso. Lista vacía si no
+         * tiene asignadas o si es un rol cross-branch (DIOS / sistema).
+         * La preferida — si la hay — va PRIMERO en la lista; el resto va
+         * ordenado por nombre.
+         */
+        public List<UserBranchDto> branches;
+    }
+
+    /**
+     * Sub-DTO mínimo de sucursal embebido en PanelUserDto. Solo carga lo
+     * necesario para el listado en /admin (id + nombre + flag de preferida)
+     * — para el resto de los datos de la branch el frontend usa el endpoint
+     * dedicado de /api/admin/branches.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class UserBranchDto {
+        public Long    id;
+        public String  name;
+        public Boolean isPreferred;
     }
 }
