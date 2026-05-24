@@ -45,11 +45,28 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final RateLimitService rateLimitService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /** Endpoints exentos del rate limit (path completo, match exacto). */
+    /**
+     * Endpoints exentos del rate limit. Son los que el frontend hace polling
+     * automático cada N segundos — si los contáramos, una conversación larga
+     * llegaría al límite solo por el polling, sin que el usuario haga nada.
+     *
+     * Match EXACTO de path (sin query string). Si necesitás un prefijo,
+     * agregalo a EXEMPT_PREFIXES.
+     */
     private static final Set<String> EXEMPT_PATHS = Set.of(
             "/api/coinbot/health",
-            "/api/public/health"
+            "/api/public/health",
+            "/api/public/check-command"   // polling del operador → comando al bot
     );
+
+    /**
+     * Prefijos exentos. Cubre endpoints con query string variable, como
+     * `/api/public/proactive-messages?sessionId=...`.
+     */
+    private static final String[] EXEMPT_PREFIXES = {
+            "/api/public/proactive-messages",  // polling de mensajes proactivos
+            "/api/public/check-command"        // por si viene con query strings
+    };
 
     /** Prefijos que sí están sujetos a rate limit. */
     private static final String[] WATCHED_PREFIXES = {
@@ -61,6 +78,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
         if (EXEMPT_PATHS.contains(path)) return true;
+        for (String prefix : EXEMPT_PREFIXES) {
+            if (path.startsWith(prefix)) return true;
+        }
         for (String prefix : WATCHED_PREFIXES) {
             if (path.startsWith(prefix)) return false;
         }

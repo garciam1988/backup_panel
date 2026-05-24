@@ -49,20 +49,37 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RateLimitService {
 
     // ── Límites configurados ────────────────────────────────────────────
+    //
+    // Los valores están calibrados para tolerar el bootstrap del bot (que
+    // dispara 20+ requests en paralelo al cargar) y el polling normal del
+    // frontend (health, proactive-messages, check-command, etc) sin
+    // penalizar uso legítimo, pero cortando ataques reales (cientos de
+    // requests por segundo).
+    //
+    // Si en producción ves que tu propio bot se banea por tráfico legítimo,
+    // subí los límites GENERAL o BURST. Si querés más protección, bajalos.
 
     /** Ventana general: 60 segundos. */
     private static final long WINDOW_GENERAL_MS = Duration.ofSeconds(60).toMillis();
-    /** Máximo en la ventana general: 60 req/min por IP. */
-    private static final int  MAX_GENERAL = 60;
+    /** Máximo en la ventana general: 200 req/min por IP.
+     *  Una conversación humana con polling cada 10s gasta ~12/min solo en
+     *  polling. Una conversación activa con varias acciones puede llegar
+     *  a 30-50/min. 200 da margen 4x para uso humano normal. */
+    private static final int  MAX_GENERAL = 200;
 
     /** Ventana burst: 10 segundos. */
     private static final long WINDOW_BURST_MS = Duration.ofSeconds(10).toMillis();
-    /** Máximo en la ventana burst: 15 req/10s por IP. */
-    private static final int  MAX_BURST = 15;
+    /** Máximo en la ventana burst: 40 req/10s por IP.
+     *  El bootstrap del bot dispara ~20-25 requests en paralelo cuando se
+     *  carga la página (config, prompts, tools, branches, menú, etc).
+     *  40 cubre con margen sin permitir burst abusivo (un humano nunca
+     *  hace 40 clicks en 10s). */
+    private static final int  MAX_BURST = 40;
 
     /** Ventana de escrituras: 1 hora. */
     private static final long WINDOW_WRITES_MS = Duration.ofHours(1).toMillis();
-    /** Máximo de escrituras: 10/hora por IP. */
+    /** Máximo de escrituras: 10/hora por IP. (Igual que antes — sigue siendo
+     *  el corte clave contra spam de reservas falsas.) */
     private static final int  MAX_WRITES = 10;
 
     /** Ventana sessionId: 1 hora. */
@@ -70,10 +87,15 @@ public class RateLimitService {
     /** Máximo por sesión: 50 mensajes/hora. */
     private static final int  MAX_SESSION = 50;
 
-    /** Después de N rechazos consecutivos en menos de 60s, la IP se banea. */
-    private static final int  STRIKES_BEFORE_BAN = 5;
-    /** Tiempo de ban temporal. */
-    private static final long BAN_DURATION_MS = Duration.ofMinutes(5).toMillis();
+    /** Strikes antes del ban temporal.
+     *  Es defensivo: solo se incrementa cuando una IP excede el límite
+     *  GENERAL (no el burst — ver checkGeneral). Un humano normal puede
+     *  excederse ocasionalmente; 10 strikes consecutivos sí es ataque. */
+    private static final int  STRIKES_BEFORE_BAN = 10;
+    /** Tiempo de ban temporal. Reducido a 2 min para que un falso positivo
+     *  no deje al cliente fuera mucho rato — si fue real ataque, el atacante
+     *  vuelve y se vuelve a banear, no importa. */
+    private static final long BAN_DURATION_MS = Duration.ofMinutes(2).toMillis();
 
     /** Límite duro del tamaño de los maps — si llegamos acá hay un problema. */
     private static final int MAX_TRACKED_IPS = 50_000;
@@ -124,8 +146,11 @@ public class RateLimitService {
         }
 
         // Burst check primero — la ventana más corta, más rápida de evaluar.
+        // IMPORTANTE: si pasa el burst pero está dentro del general, NO le
+        // damos strike. El burst se excede legítimamente cuando una página
+        // hace bootstrap de muchos recursos en paralelo. Solo el general
+        // (sostenido en el minuto) indica abuso real.
         if (!recordInBucket(burstBuckets, ip, now, WINDOW_BURST_MS, MAX_BURST)) {
-            recordStrike(ip);
             return new Decision(false, 10, "burst_exceeded");
         }
         if (!recordInBucket(generalBuckets, ip, now, WINDOW_GENERAL_MS, MAX_GENERAL)) {
@@ -152,7 +177,10 @@ public class RateLimitService {
         if (ip == null || ip.isBlank()) return Decision.ALLOWED;
         long now = System.currentTimeMillis();
         if (!recordInBucket(writeBuckets, ip, now, WINDOW_WRITES_MS, MAX_WRITES)) {
-            recordStrike(ip);
+            // No damos strike acá — un cliente que legítimamente intenta
+            // hacer 11 reservas en una hora no es atacante. El strike y
+            // ban automático están reservados para el caso de abuso
+            // sostenido sobre el endpoint general (cientos de requests/min).
             return new Decision(false, 3600, "write_limit_exceeded");
         }
         return Decision.ALLOWED;
