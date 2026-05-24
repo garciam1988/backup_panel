@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -196,6 +197,10 @@ public class BotAiController {
         ResponseEntity<String> response = forward(body, req, chosenModel,
                 MAX_TOKENS_CHAT, /*allowToolsAndSystem*/ true, /*systemOverride*/ null);
 
+        // Modelo finalmente usado para esta request. Empieza igual al chosen,
+        // se actualiza si hubo fallback.
+        String finalModel = chosenModel;
+
         // ── Fallback automático Haiku → Sonnet ──────────────────────────
         //
         // Si elegimos Haiku y la response falla funcionalmente, reintentamos
@@ -216,9 +221,26 @@ public class BotAiController {
             aiModelRouter.upgradeSessionToSonnet(sessionId);
             response = forward(body, req, AiModelRouter.MODEL_SONNET,
                     MAX_TOKENS_CHAT, true, null);
+            finalModel = AiModelRouter.MODEL_SONNET;
         }
 
-        return response;
+        // ── Exponer el modelo usado en un header de respuesta ────────────
+        //
+        // El frontend reporta el uso a /api/public/api-usage. ANTES tenía
+        // hardcodeado `model: "claude-sonnet-4-5"` ahí, lo que rompía las
+        // métricas: aunque el router eligiera Haiku, el log decía Sonnet.
+        //
+        // Ahora el frontend lee este header y reporta el modelo correcto.
+        // El header también es útil para debugging (Network tab del browser).
+        HttpHeaders extendedHeaders = new HttpHeaders();
+        extendedHeaders.putAll(response.getHeaders());
+        extendedHeaders.set("X-Resolved-Model", finalModel);
+        // Necesario para que el browser pueda LEER el header desde JS (no
+        // basta con setearlo — CORS bloquea lectura de headers custom por
+        // defecto, hay que listarlos explícitamente en Expose-Headers).
+        extendedHeaders.set("Access-Control-Expose-Headers", "X-Resolved-Model");
+
+        return new ResponseEntity<>(response.getBody(), extendedHeaders, response.getStatusCode());
     }
 
     /**

@@ -162,11 +162,23 @@ public class UsageStatsService {
 
     @Transactional(readOnly = true)
     public BotStatsDto botStats(int days) {
-        if (days != 7 && days != 30) days = 7; // soportamos solo 7 y 30 por ahora
+        // Valores soportados:
+        //   1  → "Hoy" (desde las 00:00 del día actual, no rolling 24h)
+        //   7  → últimos 7 días (rolling)
+        //   30 → últimos 30 días (rolling)
+        // Cualquier otro valor cae a 7 por seguridad.
+        if (days != 1 && days != 7 && days != 30) days = 7;
         ZoneId tz = ZoneId.systemDefault();
         ZonedDateTime now = ZonedDateTime.now(tz);
         Instant to = now.toInstant();
-        Instant from = now.minusDays(days).toInstant();
+
+        // Para "Hoy" usamos calendar day (desde 00:00 local), no rolling 24h.
+        // Razón: si el usuario entra al dashboard a las 9am y le mostramos
+        // "desde las 9am de ayer", es confuso. Calendar day es lo que
+        // espera ver alguien que pregunta "cuánto gasté HOY".
+        Instant from = (days == 1)
+                ? now.toLocalDate().atStartOfDay(tz).toInstant()
+                : now.minusDays(days).toInstant();
 
         BotStatsDto s = new BotStatsDto();
         s.windowDays = days;

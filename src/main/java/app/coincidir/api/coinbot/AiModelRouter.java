@@ -220,31 +220,54 @@ public class AiModelRouter {
      * Si el body no es parseable o no hay mensaje, default a Sonnet (seguro).
      */
     private String classifyFirstMessage(String body) {
-        if (body == null || body.isBlank()) return MODEL_SONNET;
+        if (body == null || body.isBlank()) {
+            log.warn("[AiModelRouter] body NULL/blank → default Sonnet");
+            return MODEL_SONNET;
+        }
         String userText = extractFirstUserMessage(body);
-        if (userText == null || userText.isBlank()) return MODEL_SONNET;
+        if (userText == null || userText.isBlank()) {
+            log.warn("[AiModelRouter] no pude extraer user message del body → default Sonnet. body[0..200]={}",
+                    body.length() > 200 ? body.substring(0, 200) : body);
+            return MODEL_SONNET;
+        }
 
         String text = userText.trim();
         int len = text.length();
+
+        // Log del texto clasificado para debugging
+        String preview = text.length() > 80 ? text.substring(0, 80) + "..." : text;
+        log.info("[AiModelRouter] clasificando primer mensaje (len={}): \"{}\"", len, preview);
 
         // Heurística 1: mensaje MUY corto (< 30 chars) sin datos identificables
         // → siempre Haiku. Esto cubre "Hola", "Buenas tardes", "Quiero reservar".
         // Es el caso de mayor confianza para usar Haiku.
         if (len < 30 && !containsDataPatterns(text)) {
+            log.info("[AiModelRouter] → Haiku (heurística 1: corto sin datos)");
             return MODEL_HAIKU;
         }
 
         // Heurística 2: contiene datos múltiples (email, teléfono, varias comas)
         // → Sonnet. El usuario está pasando todo de una.
-        if (PAT_EMAIL.matcher(text).find()
-            || PAT_PHONE.matcher(text).find()
-            || PAT_MANY_COMMAS.matcher(text).find()) {
+        if (PAT_EMAIL.matcher(text).find()) {
+            log.info("[AiModelRouter] → Sonnet (heurística 2: contiene email)");
+            return MODEL_SONNET;
+        }
+        if (PAT_PHONE.matcher(text).find()) {
+            log.info("[AiModelRouter] → Sonnet (heurística 2: contiene teléfono)");
+            return MODEL_SONNET;
+        }
+        if (PAT_MANY_COMMAS.matcher(text).find()) {
+            log.info("[AiModelRouter] → Sonnet (heurística 2: muchas comas)");
             return MODEL_SONNET;
         }
 
         // Heurística 3: verbos de modificación o múltiples reservas.
-        if (PAT_MODIFICATION.matcher(text).find()
-            || PAT_MULTI_RESERVA.matcher(text).find()) {
+        if (PAT_MODIFICATION.matcher(text).find()) {
+            log.info("[AiModelRouter] → Sonnet (heurística 3: verbo modificación)");
+            return MODEL_SONNET;
+        }
+        if (PAT_MULTI_RESERVA.matcher(text).find()) {
+            log.info("[AiModelRouter] → Sonnet (heurística 3: múltiples reservas)");
             return MODEL_SONNET;
         }
 
@@ -253,10 +276,12 @@ public class AiModelRouter {
         // para hoy sábado", etc. — pedidos progresivos donde el bot va a
         // pedir cada dato.
         if (len < 80) {
+            log.info("[AiModelRouter] → Haiku (heurística 4: medio sin datos)");
             return MODEL_HAIKU;
         }
 
         // Default conservador: mensaje largo o ambiguo → Sonnet.
+        log.info("[AiModelRouter] → Sonnet (default: mensaje largo)");
         return MODEL_SONNET;
     }
 

@@ -1,6 +1,8 @@
 package app.coincidir.api.security;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -78,9 +80,24 @@ public class RateLimitService {
 
     /** Ventana de escrituras: 1 hora. */
     private static final long WINDOW_WRITES_MS = Duration.ofHours(1).toMillis();
-    /** Máximo de escrituras: 10/hora por IP. (Igual que antes — sigue siendo
-     *  el corte clave contra spam de reservas falsas.) */
-    private static final int  MAX_WRITES = 10;
+    /**
+     * Máximo de escrituras por hora por IP.
+     *
+     * Default: 30. Configurable vía property `coincidir.ratelimit.max-writes`
+     * o env var `COINCIDIR_RATELIMIT_MAX_WRITES`.
+     *
+     * Casos de uso del override:
+     *   - Desarrollo: subirlo a 1000+ para testear sin interrupciones.
+     *   - Sucursales con alto volumen: 50-100 si el staff del restaurante
+     *     usa el bot desde una IP compartida.
+     *   - Lockdown defensivo ante ataque: bajarlo a 5 sin redeploy.
+     *
+     * NO es `static final` porque queremos que Spring inyecte el valor en
+     * runtime. Es field de instancia con default por seguridad (si la
+     * property falla, sigue funcionando con 30).
+     */
+    @Value("${coincidir.ratelimit.max-writes:30}")
+    private int maxWrites = 30;
 
     /** Ventana sessionId: 1 hora. */
     private static final long WINDOW_SESSION_MS = Duration.ofHours(1).toMillis();
@@ -176,7 +193,7 @@ public class RateLimitService {
     public Decision checkWrite(String ip) {
         if (ip == null || ip.isBlank()) return Decision.ALLOWED;
         long now = System.currentTimeMillis();
-        if (!recordInBucket(writeBuckets, ip, now, WINDOW_WRITES_MS, MAX_WRITES)) {
+        if (!recordInBucket(writeBuckets, ip, now, WINDOW_WRITES_MS, maxWrites)) {
             // No damos strike acá — un cliente que legítimamente intenta
             // hacer 11 reservas en una hora no es atacante. El strike y
             // ban automático están reservados para el caso de abuso
@@ -299,6 +316,14 @@ public class RateLimitService {
             }
         }
         return removed;
+    }
+
+    /** Log de configuración al startup. Útil para verificar en Railway logs
+     *  con qué valores arrancó el rate limiter. */
+    @PostConstruct
+    void logConfig() {
+        log.info("[RateLimit] config inicializada: maxWrites={}/h (configurable via " +
+                "coincidir.ratelimit.max-writes)", maxWrites);
     }
 
     /** Resultado del chequeo. */

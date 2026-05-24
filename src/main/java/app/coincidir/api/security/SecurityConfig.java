@@ -286,7 +286,7 @@ public class SecurityConfig {
             "X-Branch-Id","X-Brand-Slug","X-Branch-Slug","X-Branch-All",
             "X-Session-Id"
         ));
-        cfg.setExposedHeaders(List.of("Authorization","X-Request-Id")); // si expones el token
+        cfg.setExposedHeaders(List.of("Authorization","X-Request-Id","X-Resolved-Model"));
         cfg.setAllowCredentials(true);
         cfg.setMaxAge(3600L);
 
