@@ -264,6 +264,25 @@ public class BotConfig {
     @Column(name = "data_request_prompt", columnDefinition = "TEXT")
     private String dataRequestPrompt;
 
+    /**
+     * Estrategia de routing del modelo LLM para el chat conversacional.
+     *
+     * Valores aceptados:
+     *   - "sonnet_only"   → todas las llamadas a Sonnet 4.5 (comportamiento histórico).
+     *   - "haiku_only"    → todas las llamadas a Haiku 4.5 (1/3 del costo,
+     *                       menor capacidad de razonamiento).
+     *   - "smart_routing" → decide modelo por sesión basado en heurística sobre
+     *                       el primer mensaje, con fallback automático
+     *                       Haiku→Sonnet si Haiku falla funcionalmente.
+     *   - NULL            → usa el valor de COINBOT_AI_ROUTING_DEFAULT
+     *                       (env var). Si no está seteada, default "sonnet_only".
+     *
+     * Se configura por cliente desde /admin. Permite migrar bots gradualmente
+     * sin tocar el código.
+     */
+    @Column(name = "ai_routing_mode", length = 30)
+    private String aiRoutingMode;
+
     // ── Módulo Marketing (Loyalty + Campañas) ─────────────────────
     /**
      * Si es true, el módulo Marketing está activo en este deploy. Cuando es

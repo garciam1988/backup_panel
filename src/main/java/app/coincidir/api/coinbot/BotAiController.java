@@ -60,8 +60,19 @@ public class BotAiController {
      *  romper el stream del request). */
     private final app.coincidir.api.security.RateLimitService rateLimitService;
 
-    public BotAiController(app.coincidir.api.security.RateLimitService rateLimitService) {
+    /** Router que decide qué modelo LLM usar por sesión. Soporta sonnet_only,
+     *  haiku_only y smart_routing (con fallback automático Haiku→Sonnet). */
+    private final AiModelRouter aiModelRouter;
+
+    /** Repository para leer bot_config.ai_routing_mode del cliente activo. */
+    private final app.coincidir.api.repository.BotConfigRepository botConfigRepo;
+
+    public BotAiController(app.coincidir.api.security.RateLimitService rateLimitService,
+                           AiModelRouter aiModelRouter,
+                           app.coincidir.api.repository.BotConfigRepository botConfigRepo) {
         this.rateLimitService = rateLimitService;
+        this.aiModelRouter = aiModelRouter;
+        this.botConfigRepo = botConfigRepo;
     }
 
     @Value("${coincidir.anthropic-key:}")
@@ -78,14 +89,27 @@ public class BotAiController {
 
     private static final String ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
-    /** Modelos FIJOS — el cliente NO los elige. */
+    /** Modelos FIJOS — el cliente NO los elige.
+     *
+     *  NOTA: MODEL_CHAT ya no se usa directamente. El modelo del chat lo
+     *  decide AiModelRouter en runtime según bot_config.ai_routing_mode.
+     *  Se mantiene como referencia histórica y como fallback si por algún
+     *  motivo el router devuelve algo inválido. */
     private static final String MODEL_CHAT       = "claude-sonnet-4-5";
     private static final String MODEL_TRANSCRIPT = "claude-sonnet-4-20250514";
     private static final String MODEL_EXTRACT    = "claude-haiku-4-5-20251001";
     private static final String MODEL_GENERATE_PROMPT = "claude-sonnet-4-5";
 
-    /** Topes de tokens de salida — el cliente NO los elige. */
-    private static final int MAX_TOKENS_CHAT       = 1024;
+    /** Topes de tokens de salida — el cliente NO los elige.
+     *
+     *  MAX_TOKENS_CHAT bajado de 1024 → 500: análisis de output_tokens en
+     *  api_usage_log mostró que el 94% de las respuestas son ≤ 300 tokens
+     *  y NINGUNA llegó a 600. El cap 1024 estaba sobre-dimensionado; 500
+     *  cubre el P99 real con margen, y reduce el tiempo máximo de respuesta
+     *  para runaway responses (si el modelo se cuelga, el cliente espera
+     *  menos antes de un timeout). Cero impacto en cobro (Anthropic cobra
+     *  los tokens reales emitidos, no el cap). */
+    private static final int MAX_TOKENS_CHAT       = 500;
     private static final int MAX_TOKENS_TRANSCRIPT = 1000;
     private static final int MAX_TOKENS_EXTRACT    = 500;
     private static final int MAX_TOKENS_GENERATE_PROMPT = 3500;
@@ -151,7 +175,115 @@ public class BotAiController {
                         "Esta sesión excedió el límite de mensajes. Esperá un momento o iniciá una conversación nueva.");
             }
         }
-        return forward(body, req, MODEL_CHAT, MAX_TOKENS_CHAT, /*allowToolsAndSystem*/ true, /*systemOverride*/ null);
+
+        // ── Routing del modelo LLM ──────────────────────────────────────
+        //
+        // Decidimos qué modelo usar según la estrategia configurada en
+        // bot_config.ai_routing_mode del cliente (singleton id=1) o el
+        // default global (env COINBOT_AI_ROUTING_DEFAULT).
+        //
+        // Modos:
+        //   - sonnet_only: siempre Sonnet (comportamiento histórico).
+        //   - haiku_only: siempre Haiku (3x más barato).
+        //   - smart_routing: decisión per-sesión basada en primer mensaje,
+        //     con fallback automático Haiku→Sonnet si Haiku falla.
+        //
+        // La elección se preserva durante toda la sesión para no romper el
+        // cache de Anthropic (cache es por-modelo, switchear pierde cache hit).
+        String routingMode = getRoutingModeForActiveBotConfig();
+        String chosenModel = aiModelRouter.chooseModel(sessionId, routingMode, body);
+
+        ResponseEntity<String> response = forward(body, req, chosenModel,
+                MAX_TOKENS_CHAT, /*allowToolsAndSystem*/ true, /*systemOverride*/ null);
+
+        // ── Fallback automático Haiku → Sonnet ──────────────────────────
+        //
+        // Si elegimos Haiku y la response falla funcionalmente, reintentamos
+        // con Sonnet UNA SOLA VEZ y upgradeamos la sesión (próximos turnos
+        // van directo a Sonnet para no volver a fallar).
+        //
+        // Criterios de "falla funcional" (ver isHaikuFailure):
+        //   1. HTTP status != 200 desde Anthropic (error de red/API).
+        //   2. Response sin bloques de contenido (Haiku devolvió end_turn
+        //      sin text ni tool_use — comportamiento que rompe el chat).
+        //
+        // NO consideramos "falla" una respuesta corta o de baja calidad —
+        // esos casos NO se pueden detectar automáticamente sin otra call LLM.
+        if (AiModelRouter.MODEL_HAIKU.equals(chosenModel)
+                && isHaikuFailure(response)) {
+            log.warn("[BotAi/chat] Haiku fallback → Sonnet para sesión {} (status={})",
+                    sessionId, response.getStatusCode().value());
+            aiModelRouter.upgradeSessionToSonnet(sessionId);
+            response = forward(body, req, AiModelRouter.MODEL_SONNET,
+                    MAX_TOKENS_CHAT, true, null);
+        }
+
+        return response;
+    }
+
+    /**
+     * Lee bot_config.ai_routing_mode del cliente activo (singleton id=1).
+     * Si no existe el registro o la columna es NULL, devuelve null para
+     * que el router use el default global.
+     *
+     * Solo se llama una vez por request — pero igual cacheable a futuro
+     * si el throughput se vuelve un problema. Hoy es una query simple por
+     * primary key, costo despreciable.
+     */
+    private String getRoutingModeForActiveBotConfig() {
+        try {
+            return botConfigRepo.findById(1L)
+                    .map(app.coincidir.api.domain.BotConfig::getAiRoutingMode)
+                    .orElse(null);
+        } catch (Exception e) {
+            log.warn("[BotAi/chat] no pude leer ai_routing_mode: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Detecta si una response de Haiku falló funcionalmente y amerita
+     * fallback a Sonnet.
+     *
+     * Casos cubiertos:
+     *   1. HTTP status != 200: error de red o API de Anthropic.
+     *   2. Body presente pero sin bloques de contenido útiles
+     *      (response con stop_reason=end_turn pero content vacío) —
+     *      este es el bug clásico de "¿podés repetir?" que reportamos antes.
+     *
+     * No detecta "calidad baja" (eso requiere LLM judge).
+     */
+    private boolean isHaikuFailure(ResponseEntity<String> response) {
+        if (response == null) return true;
+        if (!response.getStatusCode().is2xxSuccessful()) return true;
+        String body = response.getBody();
+        if (body == null || body.isBlank()) return true;
+        try {
+            JsonNode root = MAPPER.readTree(body);
+            JsonNode content = root.get("content");
+            if (content == null || !content.isArray() || content.isEmpty()) {
+                return true;
+            }
+            // Si hay bloques pero ninguno es text ni tool_use, es fallo
+            // funcional (no le sirve al frontend).
+            for (JsonNode block : content) {
+                String type = block.path("type").asText("");
+                if ("text".equals(type) || "tool_use".equals(type)) {
+                    // Para text, además chequeamos que no esté vacío.
+                    if ("text".equals(type)
+                            && block.path("text").asText("").trim().isEmpty()) {
+                        continue;
+                    }
+                    return false; // Encontramos algo útil → no es falla
+                }
+            }
+            return true; // Solo thinking u otros bloques → falla funcional
+        } catch (Exception e) {
+            // Body no parseable → asumimos falla.
+            log.debug("[BotAi/chat] body no parseable en isHaikuFailure: {}",
+                    e.getMessage());
+            return true;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

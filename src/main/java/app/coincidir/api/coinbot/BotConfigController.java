@@ -110,6 +110,7 @@ public class BotConfigController {
             entity.setConversationTimeoutMinutes(dto.conversationTimeoutMinutes);
         }
         if (dto.dataRequestPrompt != null) entity.setDataRequestPrompt(dto.dataRequestPrompt);
+        if (dto.aiRoutingMode != null)     entity.setAiRoutingMode(blankToNull(dto.aiRoutingMode));
         if (dto.fraudDetectionEnabled != null) entity.setFraudDetectionEnabled(dto.fraudDetectionEnabled);
         if (dto.fraudAlertEmails != null)      entity.setFraudAlertEmails(dto.fraudAlertEmails);
         if (dto.fraudEmailSubject != null)     entity.setFraudEmailSubject(dto.fraudEmailSubject);
@@ -348,6 +349,11 @@ public class BotConfigController {
         public Integer conversationTimeoutMinutes;
         public String  dataRequestPrompt;
 
+        /** Estrategia de routing del modelo LLM. Ver BotConfig.aiRoutingMode.
+         *  Valores: "sonnet_only", "haiku_only", "smart_routing", o null
+         *  para usar default global (env COINBOT_AI_ROUTING_DEFAULT). */
+        public String  aiRoutingMode;
+
         public Boolean fraudDetectionEnabled;
         public String  fraudAlertEmails;
         public String  fraudEmailSubject;
@@ -407,6 +413,7 @@ public class BotConfigController {
             d.quickAccessJson        = e.getQuickAccessJson();
             d.conversationTimeoutMinutes = e.getConversationTimeoutMinutes();
             d.dataRequestPrompt      = e.getDataRequestPrompt();
+            d.aiRoutingMode          = e.getAiRoutingMode();
             d.fraudDetectionEnabled  = e.getFraudDetectionEnabled();
             d.fraudAlertEmails       = e.getFraudAlertEmails();
             d.fraudEmailSubject      = e.getFraudEmailSubject();
@@ -486,6 +493,7 @@ public class BotConfigController {
         m.put("businessRulesJson", e.getBusinessRulesJson());
         m.put("activePromptTemplateId", e.getActivePromptTemplateId());
         m.put("dataRequestPrompt", e.getDataRequestPrompt());
+        m.put("aiRoutingMode", e.getAiRoutingMode());
         // Permisos del bot
         m.put("allowReadReceipts", e.getAllowReadReceipts());
         m.put("allowShowImages", e.getAllowShowImages());
