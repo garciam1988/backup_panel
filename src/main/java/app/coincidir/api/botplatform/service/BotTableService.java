@@ -134,6 +134,93 @@ public class BotTableService {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // Smart Tables ←→ schema sync (autoritativo)
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Sincroniza las options del select correspondiente a `tableColumn` con los
+     * IDs de las mesas definidas en `panel_config_json.calendarConfig.tables[]`.
+     *
+     * Smart Tables es la única fuente de verdad para mesas físicas. Cuando el
+     * usuario define mesas allá, la columna del schema referenciada por
+     * `tableColumn` queda forzada como tipo `select` con esas options. Esto
+     * garantiza que el bot solo pueda insertar/modificar reservas con IDs
+     * válidos, sin que el usuario tenga que sincronizar manualmente.
+     *
+     * Modo autoritativo total: si el frontend manda la columna como `text` u
+     * otro tipo, igual se reescribe a `select` con las options correctas.
+     *
+     * @param columnsJson      schema actual ya validado (puede venir null o vacío si la tabla recién se crea sin schema seteado).
+     * @param panelConfigJson  panel_config_json actual de la tabla.
+     * @return                 schema sincronizado y serializado (o el original si no hay nada que sincronizar).
+     */
+    public String syncTableColumnOptions(String columnsJson, String panelConfigJson) {
+        // Si no hay panelConfig, no hay nada que sincronizar.
+        if (panelConfigJson == null || panelConfigJson.isBlank()) return columnsJson;
+        // Si no hay schema todavía, tampoco. (No vamos a crear columnas
+        // de la nada — la columna debe haberse definido manualmente
+        // antes en el admin.)
+        if (columnsJson == null || columnsJson.isBlank()) return columnsJson;
+
+        try {
+            JsonNode panel = objectMapper.readTree(panelConfigJson);
+            JsonNode cc = panel.path("calendarConfig");
+            String tableColumn = cc.path("tableColumn").asText("").trim();
+            JsonNode tables = cc.path("tables");
+
+            // Si no se mapeó qué columna usar para mesa, o no hay mesas
+            // todavía, no tocamos el schema.
+            if (tableColumn.isEmpty()) return columnsJson;
+            if (!tables.isArray() || tables.size() == 0) return columnsJson;
+
+            // Extraer los IDs de las mesas, en el mismo orden que vienen
+            // de Smart Tables (importante para el UX del select).
+            ArrayNode ids = objectMapper.createArrayNode();
+            Set<String> seen = new HashSet<>();
+            for (JsonNode t : tables) {
+                String id = t.path("id").asText("").trim();
+                if (id.isEmpty() || !seen.add(id)) continue;
+                ids.add(id);
+            }
+            if (ids.size() == 0) return columnsJson;
+
+            // Buscar la columna y forzarla a select con esas options.
+            // Si no existe en el schema, dejamos el schema como está
+            // (no inventamos columnas — el usuario tiene que crearla
+            // manualmente desde el admin de tablas).
+            JsonNode schemaArr = objectMapper.readTree(columnsJson);
+            if (!schemaArr.isArray()) return columnsJson;
+
+            boolean found = false;
+            ArrayNode out = objectMapper.createArrayNode();
+            for (JsonNode col : schemaArr) {
+                if (!col.isObject() || !tableColumn.equalsIgnoreCase(col.path("name").asText(""))) {
+                    out.add(col);
+                    continue;
+                }
+                found = true;
+                ObjectNode rewritten = ((ObjectNode) col.deepCopy());
+                rewritten.put("type", "select");
+                rewritten.set("options", ids);
+                out.add(rewritten);
+            }
+
+            if (!found) {
+                log.warn("[smart-tables sync] tableColumn='{}' no existe en columnsJson; " +
+                        "el sync no escribió nada. Creá la columna en el admin antes de mapearla.",
+                        tableColumn);
+                return columnsJson;
+            }
+            return objectMapper.writeValueAsString(out);
+        } catch (Exception e) {
+            // Si algo está corrupto, no rompemos el save: dejamos el schema
+            // como vino. El log queda para diagnosticar.
+            log.warn("[smart-tables sync] no se pudo sincronizar options: {}", e.getMessage());
+            return columnsJson;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // Record validation y normalización
     // ─────────────────────────────────────────────────────────────
 
@@ -215,9 +302,29 @@ public class BotTableService {
                         String s = val.asText();
                         ArrayNode opts = (ArrayNode) col.get("options");
                         boolean found = false;
-                        for (JsonNode o : opts) if (o.asText().equals(s)) { found = true; break; }
+                        // Comparación TOLERANTE a tipos y whitespace. Si el
+                        // record viene con "mesa": 2 (number) y options tiene
+                        // "2" (string), o si hay espacios " 2 ", igual matchea.
+                        // Esto es importante porque la sincronización
+                        // Smart Tables → schema escribe IDs como strings,
+                        // pero records viejos pueden tener el mismo valor
+                        // como number, y antes pasaban la validación cuando
+                        // las options eran libres.
+                        String sNorm = s == null ? "" : s.trim();
+                        for (JsonNode o : opts) {
+                            String oNorm = o.asText();
+                            if (oNorm == null) continue;
+                            oNorm = oNorm.trim();
+                            if (oNorm.equals(sNorm)) { found = true; break; }
+                            // También aceptamos match case-insensitive para
+                            // valores tipo "vip"/"VIP" que se editan
+                            // libremente desde el admin.
+                            if (oNorm.equalsIgnoreCase(sNorm)) { found = true; break; }
+                        }
                         if (!found) throw new SchemaError("'" + name + "' debe ser una de las opciones de '" + name + "'");
-                        out.put(name, s);
+                        // Guardamos el valor normalizado (sin espacios extra)
+                        // así la consistencia entre records es total.
+                        out.put(name, sNorm);
                         break;
                 }
             }

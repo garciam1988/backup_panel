@@ -109,6 +109,10 @@ public class BotTableAdminController {
         BotTable t = new BotTable();
         applyTableRequest(t, req);
         t.setColumnsJson(validatedSchema);
+        // Smart Tables es fuente de verdad para mesas físicas: si el
+        // panel_config trae tableColumn + tables[], reescribimos las
+        // options de esa columna en el schema (autoritativo).
+        t.setColumnsJson(service.syncTableColumnOptions(t.getColumnsJson(), t.getPanelConfigJson()));
         BotTable saved = tableRepo.save(t);
 
         try {
@@ -141,6 +145,20 @@ public class BotTableAdminController {
             catch (BotTableService.SchemaError e) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage()); }
         }
         applyTableRequest(t, req);
+        // Smart Tables es fuente de verdad para mesas físicas. Después de
+        // aplicar lo que viene del frontend (que puede incluir columnsJson
+        // y/o panelConfigJson), reescribimos las options del select de mesa
+        // según las mesas definidas en panel_config.calendarConfig.tables[].
+        // Esto cubre 3 casos:
+        //   1. update viene solo de Smart Tables (panelConfigJson cambia):
+        //      el frontend NO manda columnsJson, pero igual sincronizamos
+        //      contra el columnsJson actual de la tabla.
+        //   2. update viene de BotTablesSection (columnsJson cambia):
+        //      sincronizamos para garantizar que las options del select
+        //      sigan siendo las mesas válidas, no las que el frontend mandó.
+        //   3. update conjunto: ambos llegan, igual el resultado es el
+        //      schema reescrito según el panel_config final.
+        t.setColumnsJson(service.syncTableColumnOptions(t.getColumnsJson(), t.getPanelConfigJson()));
         BotTable saved = tableRepo.save(t);
 
         try {
