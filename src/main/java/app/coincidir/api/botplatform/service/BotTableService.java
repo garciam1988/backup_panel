@@ -324,6 +324,10 @@ public class BotTableService {
         // el LLM podría inventar valores con patrones plausibles (ej: timestamps
         // YYYYMMDDHHMM) que pisan al valor real que va a setear el sistema.
         StringBuilder tablesDesc = new StringBuilder("Tablas disponibles:\n");
+        // Tracking: tablas que tienen columna de teléfono configurada en el
+        // panel de admin. Si hay al menos una, agregamos al final un bloque
+        // de instrucciones sobre cómo reconocer clientes recurrentes.
+        java.util.List<String> tablesWithPhone = new java.util.ArrayList<>();
         for (BotTable t : active) {
             tablesDesc.append("- ").append(t.getSlug()).append(": ");
             if (t.getDescription() != null && !t.getDescription().isBlank())
@@ -339,7 +343,15 @@ public class BotTableService {
                     String req = c.path("required").asBoolean(false) ? "*" : "";
                     colList.add(c.get("name").asText() + ":" + type + req);
                 }
-                tablesDesc.append(String.join(", ", colList)).append("]\n");
+                tablesDesc.append(String.join(", ", colList)).append("]");
+                // Si el admin marcó qué columna es el teléfono, lo señalamos
+                // explícito para que el LLM sepa por dónde filtrar al
+                // detectar clientes recurrentes (ver bloque al final).
+                if (t.getPhoneColumn() != null && !t.getPhoneColumn().isBlank()) {
+                    tablesDesc.append(" [phoneColumn: ").append(t.getPhoneColumn()).append("]");
+                    tablesWithPhone.add(t.getSlug() + "→" + t.getPhoneColumn());
+                }
+                tablesDesc.append("\n");
             } catch (Exception e) { tablesDesc.append("[error parseando columnas]\n"); }
         }
         tablesDesc.append("\nIMPORTANTE: solo guardá información que el usuario te dio explícitamente. ")
@@ -347,6 +359,76 @@ public class BotTableService {
                   .append("add_record. NO inventes códigos, identificadores, ni valores plausibles para campos ")
                   .append("que el usuario no mencionó. El sistema rellena automáticamente los campos que ")
                   .append("necesita (ids, números de reserva, etc).\n");
+
+        // ── Bloque de "cliente recurrente" ────────────────────────────────
+        //
+        // Si al menos una tabla tiene phoneColumn configurada, agregamos
+        // instrucciones específicas para que el bot detecte clientes que
+        // ya reservaron antes y les ofrezca reutilizar sus datos en vez de
+        // pedirle todo de nuevo. UX más cálida, además de evitar typos en
+        // datos repetidos (nombre, email).
+        //
+        // Sólo se inyecta si hay al menos UNA tabla con phoneColumn — si no,
+        // el bot opera en una vertical donde el teléfono no aplica (ej:
+        // catálogo de productos, FAQ) y este bloque sería ruido en el prompt.
+        //
+        // Las claves del flujo:
+        //   1) Pedir teléfono PRIMERO en cualquier creación de registro.
+        //   2) Llamar query_records con filter por phoneColumn ANTES de
+        //      preguntar más datos.
+        //   3) Si matchea, mostrar los datos guardados y pedir confirmación.
+        //   4) Si confirma, reutilizar TODOS los datos del registro previo
+        //      excepto los específicos de la nueva reserva (fecha, hora,
+        //      cantidad de personas, observaciones, etc).
+        //   5) Si NO matchea o el cliente dice "no soy yo", proceder con
+        //      el flujo normal de pedir cada dato.
+        if (!tablesWithPhone.isEmpty()) {
+            tablesDesc.append("\n═══ RECONOCIMIENTO DE CLIENTE RECURRENTE ═══\n");
+            tablesDesc.append("Las siguientes tablas tienen columna de teléfono configurada y se usan ")
+                      .append("para registrar clientes (reservas, pedidos, etc):\n");
+            for (String tp : tablesWithPhone) {
+                tablesDesc.append("  • ").append(tp).append("\n");
+            }
+            tablesDesc.append("\n")
+                .append("FLUJO OBLIGATORIO cuando el cliente quiere crear un nuevo registro en una de esas tablas:\n")
+                .append("\n")
+                .append("1) Pedile el TELÉFONO antes que el resto de los datos.\n")
+                .append("\n")
+                .append("2) Una vez que tenés el teléfono, INMEDIATAMENTE llamá a query_records así:\n")
+                .append("     query_records({\"table\": \"<slug>\", \"filter\": {\"<phoneColumn>\": \"<teléfono>\"}})\n")
+                .append("   Esto chequea si el cliente ya reservó/registró antes.\n")
+                .append("\n")
+                .append("3) Si query_records DEVUELVE registros (matched > 0):\n")
+                .append("   • Tomá el registro MÁS RECIENTE (los resultados vienen ordenados desc).\n")
+                .append("   • Salúdalo cálidamente y mostrale los datos que tenés guardados, por ejemplo:\n")
+                .append("       \"¡Hola! Veo que ya reservaste con nosotros antes 😊\n")
+                .append("        Tengo estos datos:\n")
+                .append("        • Nombre: Pedro Lopez\n")
+                .append("        • Teléfono: +5491188889999\n")
+                .append("        • Email: pedro@gmail.com\n")
+                .append("        ¿Son correctos? Si cambió algo decime y lo actualizo.\"\n")
+                .append("   • LISTÁ los campos del registro previo que son INFO DEL CLIENTE (nombre, email,\n")
+                .append("     preferencias, restricciones alimentarias). NO listes los datos de la reserva\n")
+                .append("     anterior (fecha, hora, mesa) — eso es de la reserva pasada, no del cliente.\n")
+                .append("   • Esperá su confirmación explícita (\"sí\", \"correcto\", \"son esos\", etc).\n")
+                .append("\n")
+                .append("4) Si el cliente confirma:\n")
+                .append("   • Reutilizá esos datos (nombre, email, preferencias) en el add_record nuevo.\n")
+                .append("   • Pedile sólo lo que falta para la reserva PUNTUAL: fecha, hora, cantidad de\n")
+                .append("     personas, ocasión especial, observaciones nuevas si las hay.\n")
+                .append("\n")
+                .append("5) Si el cliente dice que NO son correctos, o que NO es él:\n")
+                .append("   • NO uses los datos del registro previo.\n")
+                .append("   • Procedé con el flujo normal: pedile cada dato uno por uno.\n")
+                .append("\n")
+                .append("6) Si query_records DEVUELVE VACÍO (matched = 0):\n")
+                .append("   • Es un cliente nuevo. Procedé con el flujo normal: pedile cada dato uno por uno.\n")
+                .append("\n")
+                .append("IMPORTANTE: nunca asumas la identidad sin confirmar. Mostrá los datos y dejá que el\n")
+                .append("cliente confirme. Si dos personas comparten teléfono (caso familia), el cliente real\n")
+                .append("te va a decir \"no soy yo, soy Juan\" y vos seguís el flujo normal con los datos nuevos.\n");
+        }
+
         String tablesDescStr = tablesDesc.toString();
 
         List<ToolDef> tools = new ArrayList<>();
