@@ -54,6 +54,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RequestMapping("/api/coinbot/ai")
 public class BotAiController {
 
+    /** Servicio centralizado de rate limit. Lo usamos acá para el límite por
+     *  sessionId, que el filtro global no puede aplicar (necesita parsear el
+     *  body para extraer el sessionId, cosa que el filter no hace para no
+     *  romper el stream del request). */
+    private final app.coincidir.api.security.RateLimitService rateLimitService;
+
+    public BotAiController(app.coincidir.api.security.RateLimitService rateLimitService) {
+        this.rateLimitService = rateLimitService;
+    }
+
     @Value("${coincidir.anthropic-key:}")
     private String anthropicKey;
 
@@ -117,6 +127,30 @@ public class BotAiController {
      */
     @PostMapping("/chat")
     public ResponseEntity<String> chat(@RequestBody String body, HttpServletRequest req) {
+        // ── Rate limit por sessionId ────────────────────────────────────
+        // El frontend envía el sessionId del chat como header HTTP
+        // `X-Session-Id`. Lo chequeamos contra el límite por sesión (50/hora).
+        // Esto bloquea ataques que rotan IPs (proxy/VPN) pero mantienen la
+        // misma sesión del bot abierta, drenando tokens.
+        //
+        // Usamos header en vez de body porque:
+        //   - No requiere parsear el JSON acá (más rápido).
+        //   - El backend forward() ya tiene su propio parseo, no duplicamos.
+        //   - Anthropic no ve el header al hacer forward (no se lo pasamos),
+        //     así que no afecta el request a la API externa.
+        //
+        // Si no viene el header (cliente viejo o request directa), saltamos
+        // — el filtro global por IP ya protegió la primera línea.
+        String sessionId = req.getHeader("X-Session-Id");
+        if (sessionId != null && !sessionId.isBlank()) {
+            var d = rateLimitService.checkSession(sessionId);
+            if (!d.allowed) {
+                log.warn("[BotAi/chat] sessionId rate-limited: session={} reason={} ip={}",
+                        sessionId, d.reason, clientIp(req));
+                return jsonError(HttpStatus.TOO_MANY_REQUESTS,
+                        "Esta sesión excedió el límite de mensajes. Esperá un momento o iniciá una conversación nueva.");
+            }
+        }
         return forward(body, req, MODEL_CHAT, MAX_TOKENS_CHAT, /*allowToolsAndSystem*/ true, /*systemOverride*/ null);
     }
 

@@ -34,6 +34,7 @@ public class PublicBotTableToolsController {
     private final BotTableService service;
     private final BotTableRepository tableRepo;
     private final BotTableRecordRepository recordRepo;
+    private final app.coincidir.api.security.RateLimitService rateLimitService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping
@@ -64,11 +65,38 @@ public class PublicBotTableToolsController {
 
     @PostMapping("/execute")
     @Transactional
-    public ExecuteResponse execute(@RequestBody ExecuteRequest req) {
+    public ExecuteResponse execute(@RequestBody ExecuteRequest req,
+                                   jakarta.servlet.http.HttpServletRequest httpReq) {
         ExecuteResponse resp = new ExecuteResponse();
         if (req == null || req.toolName == null) {
             resp.ok = false; resp.output = "toolName requerido";
             return resp;
+        }
+        // ── Rate limit ESPECÍFICO para escrituras ──────────────────────
+        //
+        // El filtro global ya aplicó los límites generales por IP (60/min
+        // + burst). Acá agregamos un cap mucho más estricto para operaciones
+        // DESTRUCTIVAS (add/update/delete) — 10/hora por IP.
+        //
+        // Razón: si alguien encuentra este endpoint, podría intentar llenar
+        // la BD de basura con miles de add_record. El cap general por IP
+        // permitiría 60 inserts por minuto durante 5 minutos (300 records)
+        // antes de banear. Con este cap específico, lo cortamos en 10/hora.
+        //
+        // Las lecturas (query_records, get_record_detail, list_bot_tables)
+        // NO entran acá — son operaciones idempotentes que no degradan el
+        // servicio si se repiten.
+        if (isWriteOperation(req.toolName)) {
+            String ip = extractIp(httpReq);
+            var d = rateLimitService.checkWrite(ip);
+            if (!d.allowed) {
+                log.warn("[BotTableTools/execute] write rate-limited: ip={} tool={} reason={}",
+                        ip, req.toolName, d.reason);
+                resp.ok = false;
+                resp.output = "Demasiadas operaciones de escritura desde este origen. " +
+                              "Probá de nuevo en una hora.";
+                return resp;
+            }
         }
         JsonNode args = req.args != null ? req.args : objectMapper.createObjectNode();
         BotTableService.ToolResult r = service.executeTool(
@@ -78,6 +106,26 @@ public class PublicBotTableToolsController {
         resp.requiresConfirmation = r.requiresConfirmation;
         resp.confirmAction = r.confirmAction;
         return resp;
+    }
+
+    /** Determina si una tool ejecuta una operación destructiva sobre la BD. */
+    private boolean isWriteOperation(String toolName) {
+        return "add_record".equals(toolName)
+            || "update_record".equals(toolName)
+            || "delete_record".equals(toolName);
+    }
+
+    /** Extrae IP del cliente con el mismo criterio que RateLimitFilter. */
+    private String extractIp(jakarta.servlet.http.HttpServletRequest req) {
+        if (req == null) return null;
+        String xff = req.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            int comma = xff.indexOf(',');
+            return (comma > 0 ? xff.substring(0, comma) : xff).trim();
+        }
+        String real = req.getHeader("X-Real-IP");
+        if (real != null && !real.isBlank()) return real.trim();
+        return req.getRemoteAddr();
     }
 
     /**

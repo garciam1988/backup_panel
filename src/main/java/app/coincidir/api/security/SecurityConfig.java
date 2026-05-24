@@ -37,6 +37,7 @@ public class SecurityConfig {
     private final RequestIdFilter requestIdFilter;
     private final BranchResolverService branchResolverService;
     private final DiosOrAdminFilter diosOrAdminFilter;
+    private final RateLimitFilter rateLimitFilter;
 
     /**
      * BranchResolverFilter como @Bean (no @Component) para que Spring Boot
@@ -169,6 +170,7 @@ public class SecurityConfig {
                                     response.getHeader("X-Request-Id"));
                         })
                 )
+                .addFilterBefore(rateLimitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(requestIdFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
                 // BranchResolverFilter va DESPUÉS del JWT para tener la auth ya
