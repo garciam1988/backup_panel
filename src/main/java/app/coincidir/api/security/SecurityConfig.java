@@ -266,12 +266,16 @@ public class SecurityConfig {
         ));
         cfg.setAllowedMethods(List.of("GET","POST","PUT","PATCH","DELETE","OPTIONS"));
         // X-Branch-Id, X-Brand-Slug, X-Branch-Slug → headers de tenancy.
+        // X-Branch-All → modo cross-branch (solo DIOS, lectura de todas las sucursales).
+        // X-Session-Id → identificador de sesión del chat AI, usado por el rate
+        //                limit por sessionId en BotAiController.
         // Sin estos en la lista, el browser hace preflight OK (200) pero
         // bloquea el fetch real por CORS — síntoma: errores "CORS error"
         // en Network y respuestas vacías en el admin.
         cfg.setAllowedHeaders(List.of(
             "Authorization","Content-Type","Accept","Origin","X-Requested-With","X-Request-Id",
-            "X-Branch-Id","X-Brand-Slug","X-Branch-Slug"
+            "X-Branch-Id","X-Brand-Slug","X-Branch-Slug","X-Branch-All",
+            "X-Session-Id"
         ));
         cfg.setExposedHeaders(List.of("Authorization","X-Request-Id")); // si expones el token
         cfg.setAllowCredentials(true);
