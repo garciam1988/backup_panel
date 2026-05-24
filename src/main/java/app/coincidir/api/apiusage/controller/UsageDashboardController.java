@@ -65,6 +65,26 @@ public class UsageDashboardController {
     }
 
     /**
+     * Estadísticas focalizadas en el costo del bot conversacional.
+     *
+     * Endpoint nuevo (vs. /summary que es legacy general). Devuelve un DTO
+     * consolidado con todas las métricas pertinentes para evaluar:
+     *   - Costo por mensaje y por conversación.
+     *   - Cache hit rate.
+     *   - Duración promedio y mensajes promedio.
+     *   - Distribución por modelo (cuando smart_routing está activo).
+     *   - Complejidad de conversaciones (por # de turnos).
+     *   - Timeline diario, top sesiones, recomendaciones automáticas.
+     *
+     * Soporta ventanas de 7 o 30 días (otros valores caen a 7 por defecto).
+     */
+    @GetMapping("/bot-stats")
+    @Transactional(readOnly = true)
+    public UsageStatsService.BotStatsDto botStats(@RequestParam(defaultValue = "7") int days) {
+        return statsService.botStats(days);
+    }
+
+    /**
      * Estado actual vs límites: devuelve si excede o está cerca de exceder
      * los umbrales. El frontend usa esto para mostrar el cartel rojo.
      */

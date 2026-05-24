@@ -63,4 +63,26 @@ public interface ConversationLogRepository extends JpaRepository<ConversationLog
      * mensajes posteriores cuando se cierra la pestaña.
      */
     Optional<ConversationLog> findFirstByVisitorIdOrderByIdDesc(String visitorId);
+
+    /**
+     * Métricas de conversación en el rango: cantidad total, duración promedio
+     * en minutos, mensajes promedio por conversación.
+     *
+     * Devuelve [totalConversations, avgDurationMinutes, avgMessageCount].
+     * Devuelve null para los promedios si no hay datos (el service maneja eso).
+     *
+     * Filtro defensivo: messageCount >= 2 (excluye conversaciones de 1 mensaje
+     * que típicamente son aperturas accidentales del bot sin engagement).
+     */
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT COUNT(c), " +
+        "AVG(FUNCTION('TIMESTAMPDIFF', MINUTE, c.startedAt, c.endedAt)), " +
+        "AVG(c.messageCount) " +
+        "FROM ConversationLog c " +
+        "WHERE c.createdAt >= :from AND c.createdAt < :to " +
+        "AND c.messageCount >= 2"
+    )
+    Object[] conversationStats(
+        @org.springframework.data.repository.query.Param("from") java.time.Instant from,
+        @org.springframework.data.repository.query.Param("to") java.time.Instant to);
 }
