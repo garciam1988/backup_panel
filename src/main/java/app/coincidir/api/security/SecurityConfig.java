@@ -260,9 +260,18 @@ public class SecurityConfig {
                 "https://*.railway.app",
                 "https://*.yes-traveluy.com",
                 "https://arviz-solutions.com",
-                "https://*.arviz-solutions.com"
-                
-
+                // El patrón `*.arviz-solutions.com` cubre subdominios de UN
+                // solo nivel (ej: bot.arviz-solutions.com). En CORS / RFC 6125,
+                // un asterisco NO matchea puntos: NO cubre `foo.bar.arviz-solutions.com`.
+                "https://*.arviz-solutions.com",
+                // Para clientes que tienen 2 niveles de subdominio
+                // (ej: preproduction.brasas-argentinas.arviz-solutions.com,
+                //      staging.brasas-argentinas.arviz-solutions.com),
+                // agregamos un patrón específico por marca. NO usamos un wildcard
+                // universal del estilo `*.*.arviz-solutions.com` porque ampliaría
+                // demasiado la superficie de ataque (cualquier subdominio anidado
+                // tendría acceso a la API).
+                "https://*.brasas-argentinas.arviz-solutions.com"
         ));
         cfg.setAllowedMethods(List.of("GET","POST","PUT","PATCH","DELETE","OPTIONS"));
         // X-Branch-Id, X-Brand-Slug, X-Branch-Slug → headers de tenancy.

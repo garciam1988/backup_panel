@@ -71,16 +71,29 @@ public interface ConversationLogRepository extends JpaRepository<ConversationLog
      * Devuelve [totalConversations, avgDurationMinutes, avgMessageCount].
      * Devuelve null para los promedios si no hay datos (el service maneja eso).
      *
-     * Filtro defensivo: messageCount >= 2 (excluye conversaciones de 1 mensaje
+     * Filtro defensivo: message_count >= 2 (excluye conversaciones de 1 mensaje
      * que típicamente son aperturas accidentales del bot sin engagement).
+     *
+     * NOTA — query nativa SQL en vez de JPQL:
+     * Originalmente intenté hacer esto con JPQL usando FUNCTION('TIMESTAMPDIFF'),
+     * pero Hibernate 6 no infiere el tipo de retorno de FUNCTION('TIMESTAMPDIFF')
+     * y le pasa java.lang.Object a AVG(), que rechaza:
+     *     "Parameter 1 of function 'avg()' has type 'NUMERIC',
+     *      but argument is of type 'java.lang.Object'"
+     * El backend ni siquiera arrancaba (fallo en bootstrap del repo).
+     *
+     * Solución: query nativa SQL. Perdemos portabilidad teórica (TIMESTAMPDIFF
+     * es de MySQL) pero ya estábamos atados a MySQL de hecho, así que no es
+     * pérdida real. Y arranca.
      */
     @org.springframework.data.jpa.repository.Query(
-        "SELECT COUNT(c), " +
-        "AVG(FUNCTION('TIMESTAMPDIFF', MINUTE, c.startedAt, c.endedAt)), " +
-        "AVG(c.messageCount) " +
-        "FROM ConversationLog c " +
-        "WHERE c.createdAt >= :from AND c.createdAt < :to " +
-        "AND c.messageCount >= 2"
+        value = "SELECT COUNT(*), " +
+                "AVG(TIMESTAMPDIFF(MINUTE, started_at, ended_at)), " +
+                "AVG(message_count) " +
+                "FROM conversation_log " +
+                "WHERE created_at >= :from AND created_at < :to " +
+                "AND message_count >= 2",
+        nativeQuery = true
     )
     Object[] conversationStats(
         @org.springframework.data.repository.query.Param("from") java.time.Instant from,

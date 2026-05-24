@@ -111,13 +111,22 @@ public interface ApiUsageLogRepository extends JpaRepository<ApiUsageLog, Long> 
      * Costo diario por día (yyyy-MM-dd) para gráfico de timeline.
      *
      * Devuelve [date, totalCost, totalCalls] agrupado por DAY.
-     * Para portabilidad usamos JPQL con FUNCTION('DATE') que MySQL maneja.
+     *
+     * NOTA — usamos query nativa SQL:
+     * Originalmente esto era JPQL con FUNCTION('DATE', l.createdAt), pero
+     * Hibernate 6 tiene comportamiento inconsistente con FUNCTION() para
+     * algunas operaciones. Para evitar romper el bootstrap del repo (como
+     * pasó con conversationStats), preferimos query nativa SQL desde el
+     * principio. Atados a MySQL pero eso ya era el caso de facto.
      */
-    @Query("SELECT FUNCTION('DATE', l.createdAt) AS dia, " +
-           "COALESCE(SUM(l.costUsd), 0), COUNT(l) " +
-           "FROM ApiUsageLog l WHERE l.feature = 'chat' " +
-           "AND l.createdAt >= :from AND l.createdAt < :to " +
-           "GROUP BY dia ORDER BY dia ASC")
+    @Query(
+        value = "SELECT DATE(created_at) AS dia, " +
+                "COALESCE(SUM(cost_usd), 0), COUNT(*) " +
+                "FROM api_usage_log WHERE feature = 'chat' " +
+                "AND created_at >= :from AND created_at < :to " +
+                "GROUP BY dia ORDER BY dia ASC",
+        nativeQuery = true
+    )
     List<Object[]> chatDailyTimeline(@Param("from") Instant from, @Param("to") Instant to);
 
     /**
