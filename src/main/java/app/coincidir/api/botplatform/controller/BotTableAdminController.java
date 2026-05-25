@@ -278,6 +278,24 @@ public class BotTableAdminController {
             String normalized = service.validateAndNormalizeRecord(t, current);
             rec.setDataJson(normalized);
             rec = recordRepo.save(rec);
+
+            // Re-aplicar columnas auto: idéntico al endpoint del panel.
+            // Sin esto, una columna con autoTemplate (ej. fecha_display que
+            // depende de fecha_y_hora_reserva) queda con el valor viejo si
+            // se modifica desde la UI del admin. Ver comentario en
+            // PanelBotTableController.updateRecord para más detalle.
+            try {
+                String withAuto = service.applyAutoColumns(t, rec);
+                if (!withAuto.equals(rec.getDataJson())) {
+                    rec.setDataJson(withAuto);
+                    rec = recordRepo.save(rec);
+                    normalized = withAuto;
+                }
+            } catch (Exception autoEx) {
+                log.warn("[Admin] applyAutoColumns falló en update record {}: {}",
+                        rec.getId(), autoEx.getMessage());
+            }
+
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); } catch (Exception ignored) {}
 
             try {

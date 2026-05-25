@@ -269,6 +269,35 @@ public class PanelBotTableController {
             String normalized = service.validateAndNormalizeRecord(t, current);
             rec.setDataJson(normalized);
             rec = recordRepo.save(rec);
+
+            // Re-aplicar columnas auto (auto: true en el schema) DESPUÉS del save.
+            // Esto cubre el caso típico de `fecha_display` con autoTemplate que
+            // depende de `fecha_y_hora_reserva`: cuando el operador arrastra una
+            // reserva en el calendario y cambia la fecha, también tiene que
+            // regenerarse el display, si no las notificaciones y la columna
+            // FECHA_DISPLAY de la tabla quedan con valores stale.
+            //
+            // BotTableService.doUpdate (endpoint del bot público) ya hace esto;
+            // este endpoint del panel se había olvidado y por eso aparecía un bug
+            // donde mover reservas dejaba fecha_display desactualizada.
+            //
+            // applyAutoColumns es idempotente y cheap (no hace I/O), así que lo
+            // corremos siempre. Solo hace save extra si algo realmente cambió.
+            try {
+                String withAuto = service.applyAutoColumns(t, rec);
+                if (!withAuto.equals(rec.getDataJson())) {
+                    rec.setDataJson(withAuto);
+                    rec = recordRepo.save(rec);
+                    // Re-normalizamos para que el response refleje los valores auto.
+                    normalized = withAuto;
+                }
+            } catch (Exception autoEx) {
+                // Best-effort: si la regeneración auto falla, dejamos el save
+                // principal igual confirmado. Solo loggeamos.
+                log.warn("[Panel] applyAutoColumns falló en update record {}: {}",
+                        rec.getId(), autoEx.getMessage());
+            }
+
             try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); } catch (Exception ignored) {}
 
             // Audit: calculamos el diff entre el snapshot previo y el nuevo.

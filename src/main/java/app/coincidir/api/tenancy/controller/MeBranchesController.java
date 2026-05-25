@@ -102,6 +102,10 @@ public class MeBranchesController {
             dto.put("address", b.getAddress());
             dto.put("timezone", b.getTimezone());
             dto.put("active", b.getActive());
+            // Flag de la feature Smart Tables. El frontend usa esto para
+            // decidir si el módulo /smarttables debe arrancar o mostrar
+            // "no activado" / "sin permisos" según el rol.
+            dto.put("smartTablesEnabled", Boolean.TRUE.equals(b.getSmartTablesEnabled()));
             dto.put("isPreferred", preferredSet.contains(b.getId()));
             dto.put("isDefault", Boolean.TRUE.equals(b.getDefaultForBrand()));
             branchDtos.add(dto);

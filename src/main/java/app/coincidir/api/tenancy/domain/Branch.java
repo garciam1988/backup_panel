@@ -74,6 +74,25 @@ public class Branch {
     @Column(name = "active", nullable = false)
     private Boolean active = Boolean.TRUE;
 
+    /**
+     * Habilita el módulo Smart Tables (diseñador 3D/2D del salón, plano de
+     * mesas con estado en vivo) para esta sucursal.
+     *
+     * Cuando está en false:
+     *   - /smarttables muestra "no activado" (a ADMIN/DIOS) o "sin permisos
+     *     suficientes" (al resto).
+     *   - La sección /admin → Smart Tables muestra solo el toggle de
+     *     activación, no el editor.
+     *
+     * Default: false. Sucursales pre-existentes a esta feature arrancan
+     * desactivadas hasta que un ADMIN/DIOS active explícitamente.
+     *
+     * Solo usuarios con role ADMIN o DIOS pueden modificar este flag —
+     * ver SmartTablesAdminController.
+     */
+    @Column(name = "smart_tables_enabled", nullable = false)
+    private Boolean smartTablesEnabled = Boolean.FALSE;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -87,6 +106,7 @@ public class Branch {
         updatedAt = now;
         if (active == null) active = Boolean.TRUE;
         if (defaultForBrand == null) defaultForBrand = Boolean.FALSE;
+        if (smartTablesEnabled == null) smartTablesEnabled = Boolean.FALSE;
     }
 
     @PreUpdate
