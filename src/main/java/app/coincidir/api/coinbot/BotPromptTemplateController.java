@@ -89,7 +89,10 @@ public class BotPromptTemplateController {
                 "admin",
                 snapshotForAudit(saved)
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[BotPromptTemplate] falló logCreate de audit para template id={}: {}",
+                    saved.getId(), e.getMessage());
+        }
 
         return ResponseEntity.status(HttpStatus.CREATED).body(BotPromptTemplateDto.fromEntity(saved));
     }
@@ -137,7 +140,10 @@ public class BotPromptTemplateController {
                     oldSnap,
                     newSnap
                 );
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("[BotPromptTemplate] falló logUpdate de audit para template id={}: {}",
+                        saved.getId(), e.getMessage());
+            }
 
             return ResponseEntity.ok(BotPromptTemplateDto.fromEntity(saved));
         }).orElse(ResponseEntity.notFound().build());
@@ -169,7 +175,10 @@ public class BotPromptTemplateController {
                 "admin",
                 oldSnap
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[BotPromptTemplate] falló logDelete de audit para template id={}: {}",
+                    id, e.getMessage());
+        }
 
         return ResponseEntity.noContent().build();
     }

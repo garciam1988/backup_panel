@@ -122,7 +122,12 @@ public class GeolocationService {
             try {
                 int second = Integer.parseInt(ip.split("\\.")[1]);
                 if (second >= 16 && second <= 31) return true;
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+                // IPv4 mal formada o segmento no numérico — caemos al return false
+                // de abajo (la IP no está en el rango privado 172.16-31). Silenciado
+                // intencional: este flujo no expone "errores reales", solo descarta
+                // IPs raras del check de bypass de geo.
+            }
         }
         return false;
     }

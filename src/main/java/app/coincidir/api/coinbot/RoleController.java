@@ -82,7 +82,12 @@ public class RoleController {
                 "admin",
                 snapshotForAudit(saved)
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            // No queremos romper la creación del rol si el audit falla, pero sí
+            // queremos enterarnos (antes se tragaba en silencio).
+            log.warn("[RoleController] falló logCreate de audit para rol id={}: {}",
+                    saved.getId(), e.getMessage());
+        }
 
         return toDto(saved);
     }
@@ -149,7 +154,10 @@ public class RoleController {
                     newSnap
                 );
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[RoleController] falló logUpdate de audit para rol id={}: {}",
+                    saved.getId(), e.getMessage());
+        }
 
         return toDto(saved);
     }
@@ -190,7 +198,10 @@ public class RoleController {
                 "admin",
                 oldSnap
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[RoleController] falló logDelete de audit para rol id={}: {}",
+                    id, e.getMessage());
+        }
     }
 
     /**

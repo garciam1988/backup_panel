@@ -106,12 +106,19 @@ public class BotToolExecutorService {
             return result;
 
         } catch (ToolExecutionException e) {
+            // ── Logueamos antes de re-throw para que el Error Monitor lo capture ──
+            // Estas excepciones son "errores de negocio" (validación fallida, SQL que
+            // violó constraints) — el caller las atrapa para devolver un mensaje al
+            // bot. Antes no las logueábamos, así que NUNCA aparecían en el monitor.
+            // Ahora sí — usando WARN porque son fallas esperables (no bugs).
+            log.warn("[BotToolExecutor] tool '{}' falló (esperable): {}", tool.getName(), e.getMessage());
             audit.setSuccess(false);
             audit.setErrorMessage(e.getMessage());
             audit.setDurationMs(System.currentTimeMillis() - start);
             saveAuditNoThrow(audit);
             throw e;
         } catch (Exception e) {
+            // Errores inesperados — bug del SQL, problema de DB, etc. log.error → monitor.
             log.error("Error ejecutando tool {}: {}", tool.getName(), e.getMessage(), e);
             audit.setSuccess(false);
             audit.setErrorMessage(e.getClass().getSimpleName() + ": " + e.getMessage());

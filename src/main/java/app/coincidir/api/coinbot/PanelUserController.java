@@ -13,6 +13,7 @@ import app.coincidir.api.tenancy.repository.BranchRepository;
 import app.coincidir.api.tenancy.repository.UserBranchAccessRepository;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCrypt;
 import org.springframework.security.core.Authentication;
@@ -47,6 +48,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/admin/panel-users")
 @RequiredArgsConstructor
+@Slf4j
 public class PanelUserController {
 
     private final PanelUserRepository repo;
@@ -101,7 +103,10 @@ public class PanelUserController {
                 "admin",
                 snapshotForAudit(saved)
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[PanelUserController] falló logCreate de audit para user id={}: {}",
+                    saved.getId(), e.getMessage());
+        }
 
         return toDto(saved);
     }
@@ -175,7 +180,10 @@ public class PanelUserController {
                     newSnap
                 );
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[PanelUserController] falló logUpdate de audit para user id={}: {}",
+                    saved.getId(), e.getMessage());
+        }
 
         return toDto(saved);
     }
@@ -214,7 +222,10 @@ public class PanelUserController {
                 "admin",
                 oldSnap
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[PanelUserController] falló logDelete de audit para user id={}: {}",
+                    id, e.getMessage());
+        }
     }
 
     /**

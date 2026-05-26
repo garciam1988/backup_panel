@@ -156,7 +156,9 @@ public class BotConfigController {
                     newSnap
                 );
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[BotConfigController] falló logUpdate de audit para config: {}", e.getMessage());
+        }
 
         return BotConfigDto.fromEntity(saved);
     }
@@ -196,7 +198,9 @@ public class BotConfigController {
                 oldSnap,
                 snapshotForAudit(entity)
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.warn("[BotConfigController] falló logActionWithChanges (reset) de audit: {}", e.getMessage());
+        }
 
         return BotConfigDto.fromEntity(entity);
     }

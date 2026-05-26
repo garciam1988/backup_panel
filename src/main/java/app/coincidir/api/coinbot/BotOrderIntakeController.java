@@ -68,7 +68,11 @@ public class BotOrderIntakeController {
                 if (pc.get("orderNumberPrefix") instanceof String s) prefix = s;
                 if (pc.get("currency") instanceof String s2) currency = s2;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            // JSON malformado en panel_orders_config_json — usamos defaults pero
+            // queremos enterarnos para corregirlo desde /admin → Pedidos.
+            log.warn("[BotOrderIntake] panel_orders_config_json inválido, usando defaults: {}", e.getMessage());
+        }
 
         String dateKey = LocalDate.now(ZoneId.of("America/Argentina/Buenos_Aires"))
                 .format(DateTimeFormatter.ofPattern("yyyyMMdd"));

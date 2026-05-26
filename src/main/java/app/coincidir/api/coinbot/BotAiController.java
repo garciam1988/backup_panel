@@ -493,13 +493,50 @@ public class BotAiController {
                     HttpResponse.BodyHandlers.ofString());
 
             long elapsedMs = (System.nanoTime() - startNs) / 1_000_000;
-            log.info("[BotAi/{}] OK status={} elapsed={}ms ip={} bodyIn={}B bodyOut={}B",
-                    model, response.statusCode(), elapsedMs, ip,
-                    finalBody.length(), response.body().length());
+            int statusCode = response.statusCode();
+            String responseBody = response.body();
 
-            return ResponseEntity.status(response.statusCode())
+            // ── Detectar errores HTTP de Anthropic ──
+            // El código original solo logueaba "OK" sin importar el status. Pero si
+            // Anthropic devuelve 4xx/5xx, esa info crítica nunca llegaba al Error
+            // Monitor. Ahora distinguimos:
+            //   - 5xx (529 overloaded, 500 internal) → log.error (capturado como error real)
+            //   - 4xx (401 auth, 429 rate-limit, 400 invalid_request) → log.warn
+            //   - 2xx → log.info (comportamiento original)
+            // Truncamos el body a 500 chars en logs para no inflar la tabla de errores
+            // con responses gigantes — la info de error de Anthropic siempre cabe ahí.
+            if (statusCode >= 500) {
+                log.error("[BotAi/{}] Anthropic HTTP {} elapsed={}ms ip={} body={}",
+                        model, statusCode, elapsedMs, ip,
+                        responseBody != null ? truncateForLog(responseBody, 500) : "(empty)");
+            } else if (statusCode >= 400) {
+                log.warn("[BotAi/{}] Anthropic HTTP {} elapsed={}ms ip={} body={}",
+                        model, statusCode, elapsedMs, ip,
+                        responseBody != null ? truncateForLog(responseBody, 500) : "(empty)");
+            } else {
+                log.info("[BotAi/{}] OK status={} elapsed={}ms ip={} bodyIn={}B bodyOut={}B",
+                        model, statusCode, elapsedMs, ip,
+                        finalBody.length(), responseBody != null ? responseBody.length() : 0);
+
+                // ── Detectar respuestas "vacías" o anómalas ──
+                // Anthropic a veces devuelve 200 OK con content=[] o stop_reason="error"
+                // que NO es un error HTTP pero rompe el flujo del bot (el usuario ve
+                // una respuesta vacía). Lo detectamos con un check rápido por substring
+                // para no parsear todo el JSON (costo bajo, false positives aceptables).
+                if (responseBody != null && responseBody.length() > 0) {
+                    boolean emptyContent = responseBody.contains("\"content\":[]") ||
+                                           responseBody.contains("\"content\": []");
+                    boolean errorStop = responseBody.contains("\"stop_reason\":\"error\"");
+                    if (emptyContent || errorStop) {
+                        log.warn("[BotAi/{}] Anthropic devolvió respuesta sospechosa (vacía o stop=error) ip={} body={}",
+                                model, ip, truncateForLog(responseBody, 500));
+                    }
+                }
+            }
+
+            return ResponseEntity.status(statusCode)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(response.body());
+                    .body(responseBody);
 
         } catch (Exception e) {
             log.error("[BotAi/{}] error llamando Anthropic (ip={}): {}", model, ip, e.getMessage(), e);
@@ -578,5 +615,16 @@ public class BotAiController {
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body);
+    }
+
+    /**
+     * Acota un string a {@code maxLen} caracteres para no inflar logs ni la tabla
+     * del Error Monitor con respuestas gigantes de Anthropic. Si el body cabe,
+     * lo devuelve tal cual. Si no, le pone "...(truncated, full len=N)".
+     */
+    private static String truncateForLog(String s, int maxLen) {
+        if (s == null) return null;
+        if (s.length() <= maxLen) return s;
+        return s.substring(0, maxLen) + "...(truncated, full len=" + s.length() + ")";
     }
 }
