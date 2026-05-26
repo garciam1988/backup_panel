@@ -852,8 +852,11 @@ public class BotTableService {
 
         // Disparamos evento "created" — los listeners (ej: BotTableEmailService)
         // se enteran y mandan email si la tabla tiene template configurado.
+        // El listener de audit registra la creación en audit_log con username="bot"
+        // para que aparezca en el histórico del panel /reserve.
         try {
-            eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created"));
+            eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "created",
+                    null, "bot"));
             log.info("[BotTable] evento 'created' publicado: tabla={} record={}", t.getSlug(), rec.getId());
         } catch (Exception e) {
             log.warn("[BotTable] no pude publicar evento created: {}", e.getMessage());
@@ -912,7 +915,14 @@ public class BotTableService {
             throw new SchemaError("Registro " + id + " no encontrado en tabla '" + slug + "'");
         }
 
-        // Merge: cargar data actual + aplicar patch + validar todo
+        // Merge: cargar data actual + aplicar patch + validar todo.
+        // Capturamos un snapshot del data ANTES del merge para que el listener
+        // de audit pueda calcular el diff (qué campos cambiaron de qué a qué).
+        // El snapshot se hace de la deserialización original — `merged` se va
+        // a mutar abajo, así que tomamos una copia independiente. JsonNode no
+        // es deep-copy-aware automático: usamos deepCopy() de Jackson.
+        JsonNode oldDataSnapshot = objectMapper.readTree(rec.getDataJson()).deepCopy();
+
         ObjectNode merged = (ObjectNode) objectMapper.readTree(rec.getDataJson());
         if (patch != null && patch.isObject()) {
             Iterator<Map.Entry<String, JsonNode>> it = patch.fields();
@@ -930,7 +940,10 @@ public class BotTableService {
         }
         recordRepo.save(rec);
 
-        try { eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated")); }
+        try {
+            eventPublisher.publishEvent(new BotTableChangeEvent(t, rec, "updated",
+                    oldDataSnapshot, "bot"));
+        }
         catch (Exception e) { log.warn("[BotTable] no pude publicar evento updated: {}", e.getMessage()); }
 
         r.ok = true;
@@ -981,7 +994,21 @@ public class BotTableService {
         // la notificación de cancelación). El evento se publica sincrónicamente
         // pero el envío de email es @Async así que tiene tiempo de capturar el
         // record antes de que se borre la transacción.
-        try { eventPublisher.publishEvent(new BotTableChangeEvent(t, toDelete, "cancelled")); }
+        //
+        // Para audit: capturamos snapshot del data ANTES de eliminar — el listener
+        // de audit usa oldData para mostrar qué reserva se canceló (con qué nombre,
+        // fecha, etc) ya que después del delete el record no existe más.
+        JsonNode deletedSnapshot = null;
+        try {
+            if (toDelete.getDataJson() != null) {
+                deletedSnapshot = objectMapper.readTree(toDelete.getDataJson());
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            eventPublisher.publishEvent(new BotTableChangeEvent(t, toDelete, "cancelled",
+                    deletedSnapshot, "bot"));
+        }
         catch (Exception e) { log.warn("[BotTable] no pude publicar evento cancelled: {}", e.getMessage()); }
 
         recordRepo.delete(toDelete);

@@ -83,25 +83,29 @@ public class AuditService {
                          String entityLabel, String module, String summary,
                          Map<String, Object> oldValue, Map<String, Object> newValue) {
         try {
-            // Si la acción la origina el bot (no hay autenticación), filtramos
-            // según el flag de configuración. La forma rápida de detectarlo es
-            // ver si hay request HTTP activa o si module="bot" explícito.
+            // Captura del username:
+            //  - Si module="bot" → username explícito "bot" (el actor lógico es el
+            //    bot conversacional, no hay JWT que mirar).
+            //  - Si no → leer el SecurityContext del request actual.
             //
-            // Por ahora confiamos en que los callers pasen module="bot" cuando
-            // corresponde y filtramos eso. Una mejora futura sería detectarlo
-            // por el JWT (si no hay Principal, es del bot/sistema).
+            // Cambio respecto del comportamiento previo: ANTES filtrábamos por
+            // module="bot" y NO registrábamos nada, asumiendo que con
+            // conversation_log alcanzaba. En la práctica, el operador que abre
+            // una reserva en /reserve quiere ver TODAS las modificaciones (incluso
+            // las del bot) en un solo histórico, sin tener que abrir la conversación
+            // entera. Por eso ahora SÍ registramos, marcando username="bot" para
+            // que el frontend pueda destacarlo visualmente.
+            String capturedUsername;
             if ("bot".equals(module)) {
-                // Las acciones del bot ya quedan en conversation_log con todo
-                // el contexto — no las duplicamos acá.
-                return;
+                capturedUsername = "bot";
+            } else {
+                capturedUsername = captureCurrentUsername();
             }
 
-            // IMPORTANTE: capturamos username, IP y user-agent SINCRÓNICAMENTE
-            // acá (en el thread del request), porque el listener corre @Async
-            // y ahí el SecurityContextHolder/RequestContextHolder ya no tiene
-            // datos (son ThreadLocals del thread original). Si no hacemos
-            // esto, todos los logs salen con username="system".
-            String capturedUsername = captureCurrentUsername();
+            // IMPORTANTE: capturamos IP y user-agent SINCRÓNICAMENTE acá (en el
+            // thread del request), porque el listener corre @Async y ahí el
+            // RequestContextHolder ya no tiene datos (son ThreadLocals del thread
+            // original). Si no hacemos esto, los logs salen sin contexto.
             String capturedIp = captureCurrentIp();
             String capturedUserAgent = captureCurrentUserAgent();
 

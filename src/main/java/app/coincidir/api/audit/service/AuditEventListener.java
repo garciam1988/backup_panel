@@ -135,6 +135,18 @@ public class AuditEventListener {
                 return;
             }
 
+            // ── Actor especial: bot conversacional ─────────────────────────
+            // Cuando AuditService.publish() detecta module="bot" setea
+            // capturedUsername="bot" explícitamente — no hay PanelUser detrás.
+            // Lo marcamos con role="BOT" y displayName fijo para que el frontend
+            // pueda darle un ícono distintivo en el histórico del panel /reserve.
+            if ("bot".equals(username)) {
+                log.setUsername("bot");
+                log.setRole("BOT");
+                log.setDisplayName("Bot de WhatsApp");
+                return;
+            }
+
             log.setUsername(username);
             // Resolver userId + role + displayName real desde la BD (no del JWT)
             // para tener siempre la info actualizada al momento del log.
