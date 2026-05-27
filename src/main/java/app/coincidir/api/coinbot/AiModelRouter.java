@@ -113,6 +113,24 @@ public class AiModelRouter {
      *  3+ comas o 2+ "y" entre datos, el cliente está pasando datos en bulk. */
     private static final Pattern PAT_MANY_COMMAS = Pattern.compile(",.*,.*,");
 
+    /**
+     * Palabras de CONFIRMACIÓN FINAL — el usuario está cerrando la conversación
+     * o aceptando algo. Cuando aparecen en una sesión Haiku con >=5 mensajes,
+     * elevamos a Sonnet para asegurar que el `add_record` se ejecute bien.
+     *
+     * Reglas del regex:
+     *  - Boundaries laxas (acepta puntuación o fin de string a los lados).
+     *  - Acepta variaciones comunes y typos: "ok"/"okey"/"oki", "dale"/"dele",
+     *    "perfecto", "confirmo"/"confirmar", "anota"/"anotame", "listo".
+     *  - "si" solo cuando es palabra completa (no parte de "siete", "sino").
+     *
+     * NO incluimos verbos como "reservar" o "quiero" — esos aparecen al INICIO
+     * de la conversación (clasificación). Acá detectamos el CIERRE.
+     */
+    private static final Pattern PAT_CONFIRMACION_FINAL = Pattern.compile(
+        "(?i)(?:^|\\s|[.,!?¡¿])(s[ií]|dale|dele|ok+(?:ey|i)?|conf[ií]rmo|confirmar|conf[ií]rmal[ao]|anot[ao]|anotam[eé]|anotal[ao]|perfecto|listo|de acuerdo|exactamente|correcto)(?:\\s|[.,!?]|$)"
+    );
+
     // ── API pública ─────────────────────────────────────────────────────
 
     /**
@@ -152,6 +170,45 @@ public class AiModelRouter {
         // ¿Ya decidimos para esta sesión? Sí → respetar la decisión previa.
         String existing = sessionModel.get(sessionId);
         if (existing != null) {
+            // ── Auto-upgrade Haiku → Sonnet por intent de reserva ─────────
+            //
+            // Aunque la sesión ya tiene modelo asignado, hay un caso donde
+            // QUEREMOS romper esa estabilidad: si la sesión arrancó en Haiku
+            // y ahora detectamos que el flujo va a guardar una reserva, vale
+            // la pena pagar el cache write una vez para que Sonnet ejecute
+            // el `add_record` con confiabilidad alta.
+            //
+            // ¿Por qué este escenario es problemático con Haiku?
+            //   - El system prompt del cliente Brasas pesa 37k tokens.
+            //   - Después de 10-15 turnos, el contexto de la conversación
+            //     pasa 50k tokens.
+            //   - Haiku 4.5 empieza a perder consistencia en tool calling
+            //     en contextos largos: a veces devuelve TEXTO de confirmación
+            //     ("¡Reserva confirmada!") SIN haber llamado `add_record`,
+            //     dejando al cliente con un mensaje "OK" y NADA guardado.
+            //   - Sonnet 4.5 maneja contextos de 100k+ sin perder tool calling.
+            //
+            // Detección conservadora: solo elevamos cuando ALL of these are true:
+            //   1. Sesión actualmente en Haiku.
+            //   2. El último mensaje del usuario sugiere CONFIRMACIÓN final
+            //      (palabras tipo "sí", "dale", "confirmo", "ok", "está bien",
+            //      "perfecto", "anotame"). No basta con "reservar" — ese verbo
+            //      lo dicen al INICIO; nos interesa el CIERRE.
+            //   3. La conversación tiene 5+ mensajes (= ya pasó del saludo
+            //      inicial al intercambio de datos = es plausible que el bot
+            //      esté por cerrar).
+            //
+            // Costo del falso positivo (elevar sin necesidad):
+            //   ~$0.14 (cache write del system de 37k a precio Sonnet).
+            // Costo del falso negativo (no elevar y la reserva falla):
+            //   Cliente molesto, reserva perdida, llamada al local.
+            //   Mucho peor que $0.14.
+            if (MODEL_HAIKU.equals(existing) && shouldUpgradeForReservation(body)) {
+                sessionModel.put(sessionId, MODEL_SONNET);
+                log.warn("[AiModelRouter] sesión {} UPGRADE Haiku → Sonnet (intent de reserva detectado)",
+                        sessionId);
+                return MODEL_SONNET;
+            }
             return existing;
         }
 
@@ -305,6 +362,60 @@ public class AiModelRouter {
      *
      * Solo extraemos el primer bloque "text".
      */
+    /**
+     * Decide si una sesión actualmente en Haiku DEBE ser elevada a Sonnet
+     * porque parece estar cerrando una reserva.
+     *
+     * Devuelve true si TODAS estas condiciones se cumplen:
+     *   1. La conversación ya tiene 5+ mensajes en el historial (no es el
+     *      saludo inicial).
+     *   2. El último mensaje del usuario matchea PAT_CONFIRMACION_FINAL.
+     *
+     * No es exacto: hay casos donde el usuario dice "sí" sin estar cerrando
+     * (ej: "¿Tienen TV?" "Sí" → bot responde info, no es reserva). Pero el
+     * costo del falso positivo es ~$0.14 mientras que el falso negativo
+     * pierde la reserva — preferimos sobre-elevar.
+     */
+    private boolean shouldUpgradeForReservation(String body) {
+        if (body == null || body.isBlank()) return false;
+
+        // Cuántos mensajes hay en el historial (incluyendo el actual). Si es
+        // < 5, todavía estamos en el "principio" de la conversación y elevar
+        // no aporta — el riesgo de falsa reserva no aplica.
+        int messageCount = countMessages(body);
+        if (messageCount < 5) return false;
+
+        String last = extractFirstUserMessage(body);
+        if (last == null || last.isBlank()) return false;
+
+        // Recortamos a 200 chars: nos interesa solo la intención general,
+        // no analizar párrafos enteros (que podrían tener "sí" embebido en
+        // otro contexto).
+        String snippet = last.length() > 200 ? last.substring(0, 200) : last;
+        boolean match = PAT_CONFIRMACION_FINAL.matcher(snippet).find();
+        if (match) {
+            String preview = snippet.length() > 60 ? snippet.substring(0, 60) + "..." : snippet;
+            log.info("[AiModelRouter] confirmación detectada (turn={}, text=\"{}\")",
+                    messageCount, preview);
+        }
+        return match;
+    }
+
+    /**
+     * Cuenta cuántos mensajes hay en el array messages del body. Devuelve 0
+     * si el body es inválido o no tiene array.
+     */
+    private int countMessages(String body) {
+        try {
+            JsonNode root = new ObjectMapper().readTree(body);
+            JsonNode messages = root.get("messages");
+            if (messages == null || !messages.isArray()) return 0;
+            return messages.size();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     private String extractFirstUserMessage(String body) {
         try {
             JsonNode root = new ObjectMapper().readTree(body);
