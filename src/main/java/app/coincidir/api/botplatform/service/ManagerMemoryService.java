@@ -130,9 +130,27 @@ public class ManagerMemoryService {
 
         if (!auto.isEmpty()) {
             sb.append("▸ Reciente (últimos 30 días):\n");
-            Instant now = Instant.now();
+            // CACHE OPTIMIZATION: usamos la fecha ABSOLUTA de creación de cada
+            // memoria (ej: "2026-05-27") en lugar del tiempo RELATIVO ("hace 5
+            // min"). Por qué:
+            //
+            //   - El tiempo relativo se recalcula contra Instant.now() en cada
+            //     request → "hace 4 min" se vuelve "hace 5 min" un minuto
+            //     después → el system prompt cambió → Anthropic rompe el cache
+            //     y paga cache write (1.25x) en vez de cache read (0.1x).
+            //
+            //   - La fecha absoluta NO cambia entre turnos de la misma sesión.
+            //     A las 14:30 y a las 14:45 dice "2026-05-27" en ambos casos.
+            //     El system prompt es bit-a-bit idéntico → cache hit en cada
+            //     turno → ahorro de ~$0.15 por sesión.
+            //
+            //   - Pérdida: el bot ya no ve "hace 5 min" sino "2026-05-27".
+            //     Para una memoria conversacional, eso es irrelevante: el
+            //     modelo entiende fechas igual de bien que tiempo relativo
+            //     ("la última vez que hablamos fue el 27/05"). Y de paso es
+            //     más preciso (no se va deformando con cada llamada).
             for (ManagerMemory m : auto) {
-                sb.append("  - [").append(formatRelative(m.getCreatedAt(), now)).append("] ")
+                sb.append("  - [").append(formatAbsoluteDate(m.getCreatedAt())).append("] ")
                   .append(m.getContent()).append("\n");
             }
             sb.append("\n");
@@ -141,7 +159,32 @@ public class ManagerMemoryService {
         return sb.toString();
     }
 
-    /** "hace 2 días", "hace 5 horas", "ahora" — sin librerías externas. */
+    /**
+     * Formatea una fecha como "YYYY-MM-DD" (ISO). NO incluye hora ni segundos —
+     * la precisión al día es suficiente para que el bot entienda el contexto
+     * temporal de una memoria, y al ser estable durante todo el día garantiza
+     * que el system prompt no cambie entre turnos de la misma sesión.
+     *
+     * El reemplazo del antiguo formatRelative() es lo que arregla el bug del
+     * cache rompiéndose en sesiones con memoria conversacional activa.
+     */
+    private String formatAbsoluteDate(Instant ts) {
+        if (ts == null) return "fecha desconocida";
+        // Usamos zona horaria del sistema (server) y solo la parte de fecha.
+        // Esto puede dar 1 día de diferencia entre servidores en distintas
+        // timezones, pero como el campo es solo para contexto al modelo (no
+        // para lógica de negocio), es aceptable.
+        return ts.atZone(java.time.ZoneId.systemDefault())
+                 .toLocalDate()
+                 .toString();
+    }
+
+    /**
+     * @deprecated NO usar — rompe el cache de Anthropic porque el texto
+     *   resultante cambia entre llamadas. Reemplazado por formatAbsoluteDate.
+     *   Lo mantenemos por si algún caller externo lo usa.
+     */
+    @Deprecated
     private String formatRelative(Instant past, Instant now) {
         long minutes = ChronoUnit.MINUTES.between(past, now);
         if (minutes < 5) return "ahora";
