@@ -11,6 +11,14 @@ import java.util.List;
 
 public interface ApiUsageLogRepository extends JpaRepository<ApiUsageLog, Long> {
 
+    /**
+     * Devuelve todas las llamadas API de una sesión, ordenadas cronológicamente.
+     * Usado por SessionBreakdownService para armar el detalle turno por turno.
+     * Spring Data JPA infiere la query del nombre del método — no hace falta
+     * @Query explícito.
+     */
+    List<ApiUsageLog> findBySessionIdOrderByCreatedAtAsc(String sessionId);
+
     /** Suma del costo total entre dos fechas (para tarjetas hoy/mes/año). */
     @Query("SELECT COALESCE(SUM(l.costUsd), 0) FROM ApiUsageLog l " +
            "WHERE l.createdAt >= :from AND l.createdAt < :to")

@@ -5,6 +5,7 @@ import app.coincidir.api.apiusage.domain.UsageBudget;
 import app.coincidir.api.apiusage.repository.ApiPricingRepository;
 import app.coincidir.api.apiusage.repository.ApiUsageLogRepository;
 import app.coincidir.api.apiusage.repository.UsageBudgetRepository;
+import app.coincidir.api.apiusage.service.SessionBreakdownService;
 import app.coincidir.api.apiusage.service.UsageStatsService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.RequiredArgsConstructor;
@@ -45,6 +46,7 @@ public class UsageDashboardController {
     private final ApiPricingRepository pricingRepo;
     private final UsageBudgetRepository budgetRepo;
     private final ApiUsageLogRepository usageLogRepo;
+    private final SessionBreakdownService breakdownService;
 
     @GetMapping("/summary")
     @Transactional(readOnly = true)
@@ -62,6 +64,27 @@ public class UsageDashboardController {
     @Transactional(readOnly = true)
     public List<UsageStatsService.TopSessionRow> topSessions(@RequestParam(defaultValue = "10") int limit) {
         return statsService.topSessions(limit);
+    }
+
+    /**
+     * Detalle turno por turno de una sesión específica.
+     *
+     * Devuelve un breakdown con:
+     *   - Metadata de la conversación asociada (nombre del cliente, marca, etc.)
+     *   - Lista de turnos con tokens, costo, modelo y mensajes pareados
+     *   - Alertas automáticas (cache rompiéndose, upgrade de modelo, etc.)
+     *
+     * Sirve para que el operador haga click en una "conversación más cara"
+     * del dashboard y entienda exactamente por qué fue cara.
+     *
+     * El sessionId que se recibe acá es el {@code visitor_id} del frontend
+     * (que se guarda como {@code session_id} en api_usage_log). Documentado
+     * en SessionBreakdownService.
+     */
+    @GetMapping("/sessions/{sessionId}/breakdown")
+    @Transactional(readOnly = true)
+    public SessionBreakdownService.BreakdownDto sessionBreakdown(@PathVariable String sessionId) {
+        return breakdownService.buildBreakdown(sessionId);
     }
 
     /**
