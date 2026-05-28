@@ -15,7 +15,7 @@ public class CoincidirApiApplication {
     // AWT/fuentes (sun.awt.X11FontManager) lanza UnsatisfiedLinkError. Apache
     // POI puede gatillar esa inicialización al generar Excel. Seteado headless
     // desde la primera línea, POI usa su fallback sin fuentes y no toca
-    // libfreetype. Es idempotente y no afecta nada más de la app.
+    // libfreetype. Es idempotente y no afecta nada más de la app..
     System.setProperty("java.awt.headless", "true");
     SpringApplication.run(CoincidirApiApplication.class, args);
   }
