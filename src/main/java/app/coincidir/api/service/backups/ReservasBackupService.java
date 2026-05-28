@@ -113,9 +113,14 @@ public class ReservasBackupService {
             log.info("[ReservasBackup] OK — {} ({} filas, {} bytes) subido a git",
                     cfg.getFilename(), rows, xlsx.length);
             return record(cfg, "OK", rows + " reserva(s) de hoy respaldadas", rows, zone);
-        } catch (Exception ex) {
+        } catch (Throwable ex) {
+            // Throwable (no solo Exception): UnsatisfiedLinkError y
+            // NoClassDefFoundError son Error, no Exception. Si el SO no tiene
+            // libfreetype y POI gatilla fuentes, atrapamos igual y registramos
+            // un error del job en vez de devolver un 500 crudo al endpoint.
             log.error("[ReservasBackup] falló: {}", ex.getMessage(), ex);
-            return record(cfg, "ERROR", trimMsg(ex.getMessage()), null, backupsService.getDailyZone());
+            return record(cfg, "ERROR", trimMsg(String.valueOf(ex.getMessage())), null,
+                    backupsService.getDailyZone());
         } finally {
             running.set(false);
         }
