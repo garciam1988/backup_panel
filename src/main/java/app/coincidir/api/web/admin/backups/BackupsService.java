@@ -909,7 +909,66 @@ public class BackupsService {
     }
 
 
+    /**
+     * Zona horaria configurada para los backups (la misma que usa el backup
+     * diario). Pública para que otros jobs de backup (ej: reservas) calculen
+     * "hoy" de forma consistente.
+     */
+    public ZoneId getDailyZone() {
+        return resolveDailyZone();
+    }
+
+    /**
+     * Escribe {@code bytes} en un archivo llamado {@code filename} dentro de la
+     * carpeta de dumps versionada (la misma que el backup diario), y hace
+     * commit + push a Git reusando el mecanismo existente. SOBREESCRIBE el
+     * archivo si ya existe (mismo nombre = siempre el último snapshot, con
+     * historial en Git).
+     *
+     * Reusa toda la autenticación de Git ya configurada en el entorno (el repo
+     * clonado con credenciales). NO duplica lógica de push. Es best-effort: si
+     * la carpeta no está dentro de un repo git, commitAndPushDumpsToGit
+     * simplemente no hace nada (igual que el backup diario).
+     *
+     * Pensado para backups de contingencia frecuentes (ej: reservas del día
+     * cada X minutos). No toca ni interfiere con el backup SQL diario.
+     *
+     * @param filename      nombre del archivo (ej: "reservas-hoy.xlsx"). Se
+     *                      sanitiza para evitar path traversal.
+     * @param bytes         contenido a escribir.
+     * @param commitMessage mensaje del commit.
+     * @throws Exception si falla la escritura del archivo (el push NO lanza).
+     */
+    public void publishFileToGit(String filename, byte[] bytes, String commitMessage) throws Exception {
+        if (filename == null || filename.isBlank()) throw new IllegalArgumentException("filename requerido");
+        if (bytes == null) throw new IllegalArgumentException("bytes requerido");
+
+        // Sanitizar: solo el nombre del archivo, sin separadores de path.
+        String safeName = Paths.get(filename).getFileName().toString();
+
+        Path dir = dumpsDir();
+        if (!Files.exists(dir)) Files.createDirectories(dir);
+
+        Path target = dir.resolve(safeName);
+        // Escritura atómica-ish: escribimos y reemplazamos. Sobreescribe si existe.
+        Files.write(target, bytes,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE);
+
+        // Commit + push reusando el flujo existente (no interrumpe si falla).
+        try {
+            commitAndPushDumpsToGit(dir, commitMessage);
+        } catch (Exception ex) {
+            log.warn("No se pudo subir el backup de reservas a git: {}", rootMessage(ex));
+        }
+    }
+
     private void commitAndPushDumpsToGit(Path dumpsDir) {
+        commitAndPushDumpsToGit(dumpsDir, null);
+    }
+
+    private void commitAndPushDumpsToGit(Path dumpsDir, String customMessage) {
         if (dumpsDir == null) return;
 
         // Detectar repo root (si la carpeta no está dentro de un repo, no hacer nada)
@@ -957,7 +1016,9 @@ public class BackupsService {
         if (!diff.ok() || diff.output.trim().isEmpty()) return;
 
         String date = LocalDate.now(resolveDailyZone()).format(DATE_ISO);
-        String msg = "Backup automatico diario [" + date + "]";
+        String msg = (customMessage != null && !customMessage.isBlank())
+                ? customMessage
+                : "Backup automatico diario [" + date + "]";
 
         GitExecResult commit = gitExec(repoRoot, Arrays.asList("git", "commit", "-m", msg), 30);
         if (!commit.ok()) {

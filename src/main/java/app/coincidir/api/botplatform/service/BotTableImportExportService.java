@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -128,7 +129,142 @@ public class BotTableImportExportService {
         }
     }
 
-    /** Devuelve un CSV con el contenido de la tabla. UTF-8 con BOM para Excel. */
+    /**
+     * Igual que exportToXlsx pero SOLO con los registros cuya columna de fecha
+     * de referencia (ej: "fecha y hora reserva") cae en el día de HOY según la
+     * zona horaria dada. Pensado para el backup de contingencia de reservas:
+     * un Excel liviano con las reservas del día, que se sube a Git cada X min.
+     *
+     * Tolera columnas de tipo "date" (yyyy-MM-dd) y "datetime"
+     * (yyyy-MM-ddTHH:mm:ss, con o sin Z/offset, o con espacio en vez de T):
+     * extrae siempre la parte de fecha y la compara contra hoy.
+     *
+     * NOTA sobre zona horaria: el bot guarda los datetime en hora LOCAL sin Z
+     * (ver BotTableService.validateAndNormalizeRecord, case "datetime"), así que
+     * comparar la parte de fecha del string contra LocalDate.now(zone) es
+     * correcto para el caso normal. Si algún valor viniera en UTC con Z, se
+     * compara su fecha UTC tal cual — es un caso de borde que el bot no genera.
+     *
+     * Si dateColumnName es null/blank o no existe en el schema, se exporta la
+     * tabla COMPLETA (degradación segura: mejor un backup de más que ninguno).
+     *
+     * @param table          la tabla a exportar (ej: Reservas)
+     * @param dateColumnName nombre EXACTO de la columna de fecha en el schema
+     * @param zone           zona horaria para determinar "hoy"
+     */
+    public byte[] exportTodayToXlsx(BotTable table, String dateColumnName, ZoneId zone) throws Exception {
+        List<JsonNode> columns = parseColumns(table);
+        List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(table.getId());
+
+        // ¿La columna de fecha existe en el schema? Si no, no filtramos.
+        boolean hasDateCol = dateColumnName != null && !dateColumnName.isBlank()
+                && columns.stream().anyMatch(c -> dateColumnName.equals(c.get("name").asText()));
+
+        LocalDate today = LocalDate.now(zone == null ? ZoneId.systemDefault() : zone);
+
+        List<BotTableRecord> records = new ArrayList<>();
+        if (!hasDateCol) {
+            log.warn("[ReservasBackup] columna de fecha '{}' no existe en tabla '{}' — exporto tabla completa",
+                    dateColumnName, table.getSlug());
+            records = all;
+        } else {
+            for (BotTableRecord rec : all) {
+                try {
+                    JsonNode data = objectMapper.readTree(rec.getDataJson());
+                    JsonNode v = data.get(dateColumnName);
+                    if (v == null || v.isNull()) continue;
+                    if (isSameDay(v.asText(), today)) records.add(rec);
+                } catch (Exception ignore) { /* fila ilegible: la salteamos */ }
+            }
+        }
+
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.createSheet(safeSheetName(table.getName()));
+
+            Row header = sheet.createRow(0);
+            for (int i = 0; i < columns.size(); i++) {
+                header.createCell(i).setCellValue(columns.get(i).get("name").asText());
+            }
+
+            int rIdx = 1;
+            for (BotTableRecord rec : records) {
+                JsonNode data;
+                try { data = objectMapper.readTree(rec.getDataJson()); }
+                catch (Exception e) { continue; }
+                Row row = sheet.createRow(rIdx++);
+                for (int i = 0; i < columns.size(); i++) {
+                    JsonNode col = columns.get(i);
+                    String name = col.get("name").asText();
+                    String type = col.get("type").asText();
+                    JsonNode val = data.get(name);
+                    if (val == null || val.isNull()) continue;
+                    Cell cell = row.createCell(i);
+                    switch (type) {
+                        case "number":
+                            cell.setCellValue(val.asDouble());
+                            break;
+                        case "boolean":
+                            cell.setCellValue(val.asBoolean() ? "Sí" : "No");
+                            break;
+                        default:
+                            cell.setCellValue(val.asText());
+                    }
+                }
+            }
+
+            for (int i = 0; i < columns.size(); i++) {
+                try { sheet.autoSizeColumn(i); } catch (Exception ignored) {}
+            }
+
+            wb.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    /**
+     * Extrae la parte de fecha (yyyy-MM-dd) de un valor date/datetime y la
+     * compara contra {@code today}. Devuelve false ante null/blank/no-parseable
+     * (nunca lanza — un valor roto no debe tumbar el backup).
+     */
+    private static boolean isSameDay(String raw, LocalDate today) {
+        if (raw == null) return false;
+        String s = raw.trim();
+        if (s.isEmpty()) return false;
+        int tIdx = s.indexOf('T');
+        if (tIdx < 0) tIdx = s.indexOf(' '); // tolera "2026-05-28 23:00:00"
+        String datePart = tIdx > 0 ? s.substring(0, tIdx) : s;
+        try {
+            return LocalDate.parse(datePart).isEqual(today); // LocalDate.parse exige ISO yyyy-MM-dd
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Cuenta cuántos registros de la tabla caen HOY según la columna de fecha.
+     * Reusa la misma lógica de filtro que exportTodayToXlsx. Si la columna no
+     * existe, devuelve el total (consistente con el fallback del export).
+     */
+    public int countTodayRecords(BotTable table, String dateColumnName, ZoneId zone) throws Exception {
+        List<JsonNode> columns = parseColumns(table);
+        List<BotTableRecord> all = recordRepo.findByTableIdOrderByCreatedAtDesc(table.getId());
+
+        boolean hasDateCol = dateColumnName != null && !dateColumnName.isBlank()
+                && columns.stream().anyMatch(c -> dateColumnName.equals(c.get("name").asText()));
+        if (!hasDateCol) return all.size();
+
+        LocalDate today = LocalDate.now(zone == null ? ZoneId.systemDefault() : zone);
+        int count = 0;
+        for (BotTableRecord rec : all) {
+            try {
+                JsonNode data = objectMapper.readTree(rec.getDataJson());
+                JsonNode v = data.get(dateColumnName);
+                if (v != null && !v.isNull() && isSameDay(v.asText(), today)) count++;
+            } catch (Exception ignore) { /* fila ilegible */ }
+        }
+        return count;
+    }
+
     public byte[] exportToCsv(BotTable table) throws Exception {
         List<JsonNode> columns = parseColumns(table);
         List<BotTableRecord> records = recordRepo.findByTableIdOrderByCreatedAtDesc(table.getId());
