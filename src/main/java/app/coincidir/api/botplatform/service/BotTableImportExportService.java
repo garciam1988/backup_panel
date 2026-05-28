@@ -119,9 +119,14 @@ public class BotTableImportExportService {
                 }
             }
 
-            // Auto-size de columnas (rápido para pocas)
+            // Ancho de columnas: usamos un ancho fijo en vez de autoSizeColumn.
+            // autoSizeColumn mide el texto vía AWT/fuentes (sun.awt.X11FontManager),
+            // que en un servidor Linux headless sin libs de fuentes lanza
+            // UnsatisfiedLinkError/NoClassDefFoundError (un Error, NO Exception,
+            // así que un try/catch(Exception) no lo atrapa). setColumnWidth no
+            // toca fuentes. Ancho ~22 caracteres (256 unidades = 1 char).
             for (int i = 0; i < columns.size(); i++) {
-                try { sheet.autoSizeColumn(i); } catch (Exception ignored) {}
+                sheet.setColumnWidth(i, 22 * 256);
             }
 
             wb.write(out);
@@ -213,7 +218,7 @@ public class BotTableImportExportService {
             }
 
             for (int i = 0; i < columns.size(); i++) {
-                try { sheet.autoSizeColumn(i); } catch (Exception ignored) {}
+                sheet.setColumnWidth(i, 22 * 256); // ancho fijo: evita X11FontManager en headless
             }
 
             wb.write(out);
